@@ -1,0 +1,25 @@
+[package]
+name = "tauri-plugin-background-service"
+version = "0.1.0"
+edition = "2021"
+links = "tauri-plugin-background-service"
+
+[lib]
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+tauri = { version = "2" }
+tauri-plugin-notification = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+thiserror = "1"
+log = "0.4"
+async-trait = "0.1"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }

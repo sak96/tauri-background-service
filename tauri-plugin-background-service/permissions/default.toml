@@ -1,0 +1,9 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = "Default permissions for the background service plugin"
+permissions = [
+    "allow-start",
+    "allow-stop",
+    "allow-is-running",
+]
