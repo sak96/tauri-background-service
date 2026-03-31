@@ -1,32 +1,26 @@
-# Code Review Plan
+# Review Plan
 
-## Step 1: Primary Pass (CURRENT)
-- Review all source files for code quality
+## Step 1: Primary Pass (COMPLETED)
+- Read all source files (Rust, Swift, Kotlin, config)
+- Run tests and clippy
 - Identify highest-risk areas
-- Create initial findings document
-- ✅ Complete
+- Write initial findings
 
-## Step 2: Deep Analysis - iOS Lifecycle Signaling
-**Task Key:** review:step-02:ios-lifecycle
-**Focus Area:** lib.rs:69-117
+## Step 2: Deep Analysis — iOS BGTask Lifecycle
+Trace all state transitions in `BackgroundServicePlugin.swift` under adversarial timing scenarios:
+1. Map every (state, trigger) pair in the Swift state machine
+2. Verify no double `setTaskCompleted` calls possible
+3. Verify no orphaned `pendingCancelInvoke` possible
+4. Verify safety timer is properly cancelled in all exit paths
+5. Trace Rust ↔ Swift interaction: what happens if `completeBgTask` fires while `waitForCancel` hasn't been called yet?
+6. Verify thread safety of `MobileLifecycle` handle sharing (one for on_complete, one for spawn_blocking)
 
-Analyze:
-- Callback capture semantics and timing
-- spawn_blocking lifecycle and cleanup
-- Pending Invoke pattern correctness
-- Edge cases: rapid start/stop, error paths
-- Memory safety of callback closures
+## Step 3: Deep Analysis — Runner Race Conditions (if needed)
+Verify generation counter correctness under rapid stop→start→stop→start:
+1. Can the generation counter overflow? (AtomicU64 — practically no)
+2. Can stop() race with the spawned task's token cleanup?
+3. Is the on_complete callback always called exactly once per task lifecycle?
 
-## Step 3: Deep Analysis - Generation Counter (if needed)
-**Task Key:** review:step-03:generation-counter
-**Focus Area:** runner.rs generation counter pattern
-
-Analyze:
-- Atomic ordering happens-before relationships
-- Stop→start race condition scenarios
-- Token clearing logic correctness
-
-## Final Step: Synthesis and Completion
-- Consolidate all findings
-- Final assessment
-- Close review tasks
+## Final Step: Synthesis
+- Merge all findings into final report
+- Approve or request changes
