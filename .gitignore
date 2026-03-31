@@ -9,6 +9,7 @@ tauri-plugin-background-service/permissions/schemas/
 # Node
 node_modules/
 dist/
+dist-js/
 
 # IDE
 .idea/

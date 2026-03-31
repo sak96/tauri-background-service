@@ -36,6 +36,30 @@ impl<R: Runtime> MobileLifecycle<R> {
     pub fn stop_keepalive(&self) -> Result<(), tauri::Error> {
         self.handle.run_mobile_plugin("stopKeepalive", ())
     }
+
+    /// Notify the native layer that the background service's `run()` completed.
+    ///
+    /// - iOS: calls `setTaskCompleted` on the stored BGTask and schedules the next one.
+    pub fn complete_bg_task(&self, success: bool) -> Result<(), tauri::Error> {
+        self.handle
+            .run_mobile_plugin("completeBgTask", CompleteBgTaskArgs { success })
+    }
+
+    /// Block until the native layer signals cancellation (e.g. iOS expiration handler).
+    ///
+    /// Uses the Pending Invoke pattern — the native side stores the Invoke without
+    /// resolving it, which blocks this thread via `run_mobile_plugin`'s `rx.recv()`.
+    /// When the expiration handler fires, it resolves the Invoke, unblocking this call.
+    pub fn wait_for_cancel(&self) -> Result<(), tauri::Error> {
+        self.handle.run_mobile_plugin("waitForCancel", ())
+    }
+}
+
+/// Arguments sent to the native `completeBgTask` handler.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CompleteBgTaskArgs {
+    success: bool,
 }
 
 /// Canonical Tauri v2 mobile init function.

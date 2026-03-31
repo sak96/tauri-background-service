@@ -66,9 +66,57 @@ async fn start<R: Runtime>(app: AppHandle<R>, config: StartConfig) -> Result<(),
         .start_keepalive(&config.service_label)
         .map_err(|e| e.to_string())?;
 
+    // iOS: wire on_complete callback BEFORE starting the service.
+    // The callback must be set before holder.start() because start_boxed()
+    // captures the callback via take() at spawn time. If set after start(),
+    // the callback is always None and completeBgTask never fires.
+    #[cfg(target_os = "ios")]
+    {
+        let mobile = app.state::<MobileLifecycle<R>>();
+        let mobile_handle = mobile.handle.clone();
+        let holder = app.state::<Arc<ServiceRunnerHolder<R>>>();
+
+        // Set on_complete callback: notifies Swift when run() finishes
+        let mob_for_complete = MobileLifecycle {
+            handle: mobile_handle.clone(),
+        };
+        holder.runner.set_on_complete(Box::new(move |success| {
+            let _ = mob_for_complete.complete_bg_task(success);
+        }));
+    }
+
     app.state::<Arc<ServiceRunnerHolder<R>>>()
         .start(app.clone(), config)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // iOS: spawn wait_for_cancel listener AFTER starting the service.
+    // This blocking thread waits for the iOS expiration signal (waitForCancel).
+    // When expiration fires, stop the runner to trigger graceful cancellation.
+    #[cfg(target_os = "ios")]
+    {
+        let mobile = app.state::<MobileLifecycle<R>>();
+        let mobile_handle = mobile.handle.clone();
+
+        // Spawn blocking thread: waits for iOS expiration signal
+        let app_for_cancel = app.clone();
+        tokio::task::spawn_blocking(move || {
+            let mob = MobileLifecycle {
+                handle: mobile_handle,
+            };
+            match mob.wait_for_cancel() {
+                Ok(()) => {
+                    // Expiration signaled — stop the runner
+                    let holder = app_for_cancel.state::<Arc<ServiceRunnerHolder<R>>>();
+                    let _ = holder.runner.stop();
+                }
+                Err(_) => {
+                    // Invoke rejected (normal completion) — exit thread
+                }
+            }
+        });
+    }
+
+    Ok(())
 }
 
 #[tauri::command]

@@ -9,6 +9,8 @@ use crate::models::{PluginEvent, ServiceContext, StartConfig};
 use crate::notifier::Notifier;
 use crate::service_trait::BackgroundService;
 
+type CompletionCallback = Box<dyn Fn(bool) + Send + Sync>;
+
 /// Manages service lifecycle: spawns Tokio tasks and tracks the CancellationToken.
 ///
 /// A generation counter prevents a race condition where a rapid stop→start
@@ -16,6 +18,7 @@ use crate::service_trait::BackgroundService;
 pub struct ServiceRunner {
     token: Arc<Mutex<Option<CancellationToken>>>,
     generation: Arc<AtomicU64>,
+    on_complete: Arc<Mutex<Option<CompletionCallback>>>,
 }
 
 impl ServiceRunner {
@@ -24,12 +27,22 @@ impl ServiceRunner {
         Self {
             token: Arc::new(Mutex::new(None)),
             generation: Arc::new(AtomicU64::new(0)),
+            on_complete: Arc::new(Mutex::new(None)),
         }
     }
 
     /// Returns `true` if a service is currently running.
     pub fn is_running(&self) -> bool {
         self.token.lock().unwrap().is_some()
+    }
+
+    /// Set a callback to fire after the service's `run()` completes.
+    ///
+    /// The callback receives `true` on success, `false` on error.
+    /// It is captured at spawn time, so overwriting it after `start()`
+    /// does not affect the already-running task.
+    pub fn set_on_complete(&self, callback: CompletionCallback) {
+        *self.on_complete.lock().unwrap() = Some(callback);
     }
 
     /// Start a background service (generic version for concrete types).
@@ -82,6 +95,12 @@ impl ServiceRunner {
         let token_ref = self.token.clone();
         let gen_ref = self.generation.clone();
 
+        // Capture on_complete at spawn time (generation-guarded).
+        // Takes the callback out of the slot so a new start can set a fresh one.
+        let on_complete_ref = self.on_complete.clone();
+        let captured_callback: Option<CompletionCallback> =
+            on_complete_ref.lock().unwrap().take();
+
         let ctx = ServiceContext {
             notifier: Notifier { app: app.clone() },
             app: app.clone(),
@@ -125,7 +144,7 @@ impl ServiceRunner {
                         },
                     );
                 }
-                Err(e) => {
+                Err(ref e) => {
                     let _ = app.emit(
                         "background-service://event",
                         PluginEvent::Error {
@@ -133,6 +152,11 @@ impl ServiceRunner {
                         },
                     );
                 }
+            }
+
+            // Fire on_complete callback (captured at spawn time)
+            if let Some(cb) = captured_callback {
+                cb(result.is_ok());
             }
         });
 
@@ -240,5 +264,19 @@ mod tests {
         config: StartConfig,
     ) {
         let _ = runner.start_boxed(app, service, config);
+    }
+
+    #[test]
+    fn set_on_complete_stores_callback() {
+        let runner = ServiceRunner::new();
+        let called = Arc::new(AtomicU64::new(0));
+        let called_clone = called.clone();
+        runner.set_on_complete(Box::new(move |_success| {
+            called_clone.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert!(
+            runner.on_complete.lock().unwrap().is_some(),
+            "callback should be stored"
+        );
     }
 }

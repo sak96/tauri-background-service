@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::Runtime;
@@ -185,4 +186,190 @@ async fn restart_after_stop() {
 
     // Clean up
     runner.stop().expect("final cleanup");
+}
+
+// ─── Callback Test Services ────────────────────────────────────────────
+
+/// Service that completes run() immediately with Ok.
+struct ImmediateSuccessService;
+
+#[async_trait]
+impl<R: Runtime> BackgroundService<R> for ImmediateSuccessService {
+    async fn init(&mut self, _ctx: &ServiceContext<R>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    async fn run(&mut self, _ctx: &ServiceContext<R>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+}
+
+/// Service that completes run() immediately with Err.
+struct ImmediateErrorService;
+
+#[async_trait]
+impl<R: Runtime> BackgroundService<R> for ImmediateErrorService {
+    async fn init(&mut self, _ctx: &ServiceContext<R>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    async fn run(&mut self, _ctx: &ServiceContext<R>) -> Result<(), ServiceError> {
+        Err(ServiceError::Runtime("test error".into()))
+    }
+}
+
+/// Service that waits for cancellation, tracking how many times run() completed.
+struct TrackedCallbackService {
+    run_started: Arc<AtomicBool>,
+}
+
+impl TrackedCallbackService {
+    fn new() -> (Self, Arc<AtomicBool>) {
+        let flag = Arc::new(AtomicBool::new(false));
+        let service = Self {
+            run_started: flag.clone(),
+        };
+        (service, flag)
+    }
+}
+
+#[async_trait]
+impl<R: Runtime> BackgroundService<R> for TrackedCallbackService {
+    async fn init(&mut self, _ctx: &ServiceContext<R>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    async fn run(&mut self, ctx: &ServiceContext<R>) -> Result<(), ServiceError> {
+        self.run_started.store(true, Ordering::SeqCst);
+        ctx.shutdown.cancelled().await;
+        Ok(())
+    }
+}
+
+// ─── Callback Tests ────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn on_complete_fires_on_run_success() {
+    let app = tauri::test::mock_app();
+    let runner = ServiceRunner::new();
+
+    let success_val = Arc::new(AtomicU8::new(255)); // 255 = not called yet
+    let success_clone = success_val.clone();
+    runner.set_on_complete(Box::new(move |success| {
+        success_clone.store(if success { 1 } else { 0 }, Ordering::SeqCst);
+    }));
+
+    runner
+        .start(
+            app.handle().clone(),
+            ImmediateSuccessService,
+            StartConfig::default(),
+        )
+        .expect("start should succeed");
+
+    // Wait for the spawned task to complete
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert_eq!(
+        success_val.load(Ordering::SeqCst),
+        1,
+        "callback should be called with true on success"
+    );
+}
+
+#[tokio::test]
+async fn on_complete_fires_on_run_error() {
+    let app = tauri::test::mock_app();
+    let runner = ServiceRunner::new();
+
+    let success_val = Arc::new(AtomicU8::new(255)); // 255 = not called yet
+    let success_clone = success_val.clone();
+    runner.set_on_complete(Box::new(move |success| {
+        success_clone.store(if success { 1 } else { 0 }, Ordering::SeqCst);
+    }));
+
+    runner
+        .start(
+            app.handle().clone(),
+            ImmediateErrorService,
+            StartConfig::default(),
+        )
+        .expect("start should succeed");
+
+    // Wait for the spawned task to complete
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert_eq!(
+        success_val.load(Ordering::SeqCst),
+        0,
+        "callback should be called with false on error"
+    );
+}
+
+#[tokio::test]
+async fn on_complete_none_no_panic() {
+    let app = tauri::test::mock_app();
+    let runner = ServiceRunner::new();
+    // No set_on_complete call — desktop behavior
+
+    runner
+        .start(
+            app.handle().clone(),
+            ImmediateSuccessService,
+            StartConfig::default(),
+        )
+        .expect("start should succeed");
+
+    // Wait for the spawned task to complete without panicking
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // If we get here, no panic occurred
+    assert!(!runner.is_running(), "should not be running after completion");
+}
+
+#[tokio::test]
+async fn on_complete_generation_guarded() {
+    let app = tauri::test::mock_app();
+    let runner = ServiceRunner::new();
+
+    let callback_a_val = Arc::new(AtomicU8::new(0));
+    let callback_b_val = Arc::new(AtomicU8::new(0));
+    let callback_a_clone = callback_a_val.clone();
+    let callback_b_clone = callback_b_val.clone();
+
+    // Set callback A
+    runner.set_on_complete(Box::new(move |_success| {
+        callback_a_clone.fetch_add(1, Ordering::SeqCst);
+    }));
+
+    // Start service that waits for cancellation
+    let (service, run_started) = TrackedCallbackService::new();
+    runner
+        .start(app.handle().clone(), service, StartConfig::default())
+        .expect("start should succeed");
+
+    // Wait for run() to start
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(run_started.load(Ordering::SeqCst), "run should have started");
+
+    // Overwrite callback to B while service is still running
+    runner.set_on_complete(Box::new(move |_success| {
+        callback_b_clone.fetch_add(1, Ordering::SeqCst);
+    }));
+
+    // Stop the service — triggers completion
+    runner.stop().expect("stop should succeed");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // The OLD task should have fired callback A (captured at spawn time)
+    assert_eq!(
+        callback_a_val.load(Ordering::SeqCst),
+        1,
+        "original callback A should have been called"
+    );
+    assert_eq!(
+        callback_b_val.load(Ordering::SeqCst),
+        0,
+        "new callback B should NOT have been called by old task"
+    );
 }

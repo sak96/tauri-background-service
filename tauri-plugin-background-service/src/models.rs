@@ -41,6 +41,7 @@ impl Default for StartConfig {
 /// Built-in event types emitted by the runner itself.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
+#[non_exhaustive]
 pub enum PluginEvent {
     /// init() completed successfully
     Started,

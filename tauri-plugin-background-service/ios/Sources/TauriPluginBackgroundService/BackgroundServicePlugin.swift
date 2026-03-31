@@ -9,6 +9,11 @@ import WebKit
         "\(Bundle.main.bundleIdentifier ?? "app").bg-refresh"
     }
 
+    // MARK: - State for C1: BGTask lifecycle management
+    private var currentTask: BGAppRefreshTask?
+    private var pendingCancelInvoke: Invoke?
+    private var safetyTimer: Timer?
+
     public override func load(webView: WKWebView) {
         super.load(webView)
 
@@ -20,21 +25,147 @@ import WebKit
         // Register background task handler before the app finishes launching.
         BGTaskScheduler.shared.register(forTaskWithIdentifier: taskId, using: .main) {
             [weak self] task in
-            // The OS has granted a background execution window.
-            // The Rust Tokio runtime is already in this process and will
-            // use this window to run its async work naturally.
-            task.setTaskCompleted(success: true)
-            self?.scheduleNext()
+            self?.handleBackgroundTask(task as! BGAppRefreshTask)
         }
     }
 
+    // MARK: - BGTask Handler (C1: rewritten to not complete immediately)
+    private func handleBackgroundTask(_ task: BGAppRefreshTask) {
+        // Store task reference for later completion
+        self.currentTask = task
+
+        // Set expiration handler that signals cancellation to Rust
+        task.expirationHandler = { [weak self] in
+            self?.handleExpiration()
+        }
+
+        // Start 25-second safety timer (fallback if Rust panics)
+        startSafetyTimer()
+
+        // DO NOT call setTaskCompleted here — wait for Rust signal
+    }
+
+    // MARK: - Expiration Handler (C1: signals Rust to cancel)
+    private func handleExpiration() {
+        // Resolve pending cancel invoke (unblocks Rust thread)
+        if let invoke = pendingCancelInvoke {
+            invoke.resolve()
+            pendingCancelInvoke = nil
+        }
+
+        // Complete task with failure
+        currentTask?.setTaskCompleted(success: false)
+
+        // Schedule next task
+        scheduleNext()
+
+        // Clear all state
+        cleanup()
+    }
+
+    // MARK: - Safety Timer (C1: 25-second fallback)
+    private func startSafetyTimer() {
+        safetyTimer?.invalidate()
+        safetyTimer = Timer.scheduledTimer(withTimeInterval: 25.0, repeats: false) { [weak self] _ in
+            self?.handleSafetyTimerExpiration()
+        }
+    }
+
+    private func handleSafetyTimerExpiration() {
+        // Force-complete task if Rust never called completeBgTask
+        if currentTask != nil {
+            // Reject pending cancel invoke (unblocks Rust thread)
+            if let invoke = pendingCancelInvoke {
+                invoke.reject(error: nil)
+                pendingCancelInvoke = nil
+            }
+
+            // Complete task with failure
+            currentTask?.setTaskCompleted(success: false)
+
+            // Schedule next task
+            scheduleNext()
+
+            // Clear all state
+            cleanup()
+        }
+    }
+
+    // MARK: - Cleanup (C1: clear all state)
+    private func cleanup() {
+        currentTask = nil
+        pendingCancelInvoke = nil
+        safetyTimer?.invalidate()
+        safetyTimer = nil
+    }
+
+    // MARK: - waitForCancel (C1: Pending Invoke pattern)
+    @objc public func waitForCancel(_ invoke: Invoke) {
+        // Store invoke without resolving (blocks Rust thread)
+        // If no active BGTask, resolve immediately (service not running)
+        if currentTask == nil {
+            invoke.resolve()
+        } else {
+            pendingCancelInvoke = invoke
+        }
+    }
+
+    // MARK: - completeBgTask (C1: Rust→Swift completion signal)
+    @objc public func completeBgTask(_ invoke: Invoke) {
+        // Extract success value from invoke arguments
+        let success = invoke.args(as: [String: Bool].self)?["success"] ?? true
+
+        // Complete the stored BGTask if still active
+        if let task = currentTask {
+            task.setTaskCompleted(success: success)
+        }
+
+        // Reject pending cancel invoke (unblocks Rust thread)
+        if let cancelInvoke = pendingCancelInvoke {
+            cancelInvoke.reject(error: nil)
+            pendingCancelInvoke = nil
+        }
+
+        // Schedule next task
+        scheduleNext()
+
+        // Clear all state
+        cleanup()
+
+        // Resolve this invoke
+        invoke.resolve()
+    }
+
+    // MARK: - startKeepalive (unchanged)
     @objc public func startKeepalive(_ invoke: Invoke) {
         scheduleNext()
         invoke.resolve()
     }
 
+    // MARK: - stopKeepalive (C1: modified to clean up active task)
     @objc public func stopKeepalive(_ invoke: Invoke) {
+        // Cancel any pending schedule
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: taskId)
+
+        // If a BGTask is active, complete it and clean up
+        if currentTask != nil {
+            // Reject pending cancel invoke (unblocks Rust thread)
+            if let cancelInvoke = pendingCancelInvoke {
+                cancelInvoke.reject(error: nil)
+                pendingCancelInvoke = nil
+            }
+
+            // Complete active task with failure
+            currentTask?.setTaskCompleted(success: false)
+
+            // Clear all state
+            cleanup()
+        }
+
+        // Safety timer cleanup
+        safetyTimer?.invalidate()
+        safetyTimer = nil
+
         invoke.resolve()
     }
 

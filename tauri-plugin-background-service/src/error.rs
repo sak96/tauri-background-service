@@ -1,4 +1,5 @@
 #[derive(Debug, thiserror::Error, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum ServiceError {
     #[error("Service is already running")]
     AlreadyRunning,
