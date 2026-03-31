@@ -1,26 +1,32 @@
-# Review Plan
+# Code Review Plan
 
-## Step 1: Primary Pass (COMPLETE)
-- Read all source files (Rust, Kotlin, Swift, TypeScript)
-- Run `cargo test`, `cargo check`, `cargo clippy`
-- Identify top-risk areas
-- Write initial findings
+## Step 1: Primary Pass (CURRENT)
+- Review all source files for code quality
+- Identify highest-risk areas
+- Create initial findings document
+- ✅ Complete
 
-## Step 2: Deep Analysis — iOS Background Task Lifecycle (HIGHEST RISK)
-The iOS `BGAppRefreshTask` handler completes immediately without coordinating with the Rust Tokio runtime. This means:
-- The OS background execution window is wasted
-- The 15-minute minimum interval between task executions is essentially idle
-- The `run()` loop in Rust has no awareness of iOS background task lifecycle
+## Step 2: Deep Analysis - iOS Lifecycle Signaling
+**Task Key:** review:step-02:ios-lifecycle
+**Focus Area:** lib.rs:69-117
 
-This needs deep analysis of whether the iOS story actually works or needs redesign.
+Analyze:
+- Callback capture semantics and timing
+- spawn_blocking lifecycle and cleanup
+- Pending Invoke pattern correctness
+- Edge cases: rapid start/stop, error paths
+- Memory safety of callback closures
 
-## Step 3: Deep Analysis — JS Build Tooling (COMPLETE)
-Missing `rollup.config.js` confirmed: build fails. Five issues found:
-1. No rollup config → build entirely broken
-2. No dist-js/ output → package non-functional
-3. No package-lock.json → no reproducibility
-4. .gitignore missing dist-js/ → accidental commit risk
-5. tsconfig include too broad → would bundle unwanted files
+## Step 3: Deep Analysis - Generation Counter (if needed)
+**Task Key:** review:step-03:generation-counter
+**Focus Area:** runner.rs generation counter pattern
 
-## Final Step: Synthesis
-Combine all findings into the final review report.
+Analyze:
+- Atomic ordering happens-before relationships
+- Stop→start race condition scenarios
+- Token clearing logic correctness
+
+## Final Step: Synthesis and Completion
+- Consolidate all findings
+- Final assessment
+- Close review tasks
