@@ -26,7 +26,8 @@ impl<R: Runtime> MobileLifecycle<R> {
     /// - iOS: schedules a `BGAppRefreshTask`.
     pub fn start_keepalive(&self, label: &str) -> Result<(), tauri::Error> {
         self.handle
-            .run_mobile_plugin("startKeepalive", StartKeepaliveArgs { label })
+            .run_mobile_plugin::<()>("startKeepalive", StartKeepaliveArgs { label })?;
+        Ok(())
     }
 
     /// Stop the OS-specific keepalive mechanism.
@@ -34,7 +35,8 @@ impl<R: Runtime> MobileLifecycle<R> {
     /// - Android: stops the Foreground Service.
     /// - iOS: cancels the scheduled background task.
     pub fn stop_keepalive(&self) -> Result<(), tauri::Error> {
-        self.handle.run_mobile_plugin("stopKeepalive", ())
+        self.handle.run_mobile_plugin::<()>("stopKeepalive", ())?;
+        Ok(())
     }
 
     /// Notify the native layer that the background service's `run()` completed.
@@ -42,7 +44,8 @@ impl<R: Runtime> MobileLifecycle<R> {
     /// - iOS: calls `setTaskCompleted` on the stored BGTask and schedules the next one.
     pub fn complete_bg_task(&self, success: bool) -> Result<(), tauri::Error> {
         self.handle
-            .run_mobile_plugin("completeBgTask", CompleteBgTaskArgs { success })
+            .run_mobile_plugin::<()>("completeBgTask", CompleteBgTaskArgs { success })?;
+        Ok(())
     }
 
     /// Block until the native layer signals cancellation (e.g. iOS expiration handler).
@@ -51,7 +54,8 @@ impl<R: Runtime> MobileLifecycle<R> {
     /// resolving it, which blocks this thread via `run_mobile_plugin`'s `rx.recv()`.
     /// When the expiration handler fires, it resolves the Invoke, unblocking this call.
     pub fn wait_for_cancel(&self) -> Result<(), tauri::Error> {
-        self.handle.run_mobile_plugin("waitForCancel", ())
+        self.handle.run_mobile_plugin::<()>("waitForCancel", ())?;
+        Ok(())
     }
 }
 

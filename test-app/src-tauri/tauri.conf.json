@@ -1,0 +1,27 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicehash/tauri/dev/crates/tauri-cli/schema.json",
+  "productName": "Background Service Test",
+  "version": "0.1.0",
+  "identifier": "com.test.backgroundservice",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Background Service Test App",
+        "width": 400,
+        "height": 700
+      }
+    ]
+  },
+  "bundle": {
+    "android": {
+      "minSdkVersion": 33
+    }
+  }
+}

@@ -14,7 +14,7 @@ import app.tauri.plugin.Plugin
 @TauriPlugin
 class BackgroundServicePlugin(private val activity: Activity) : Plugin(activity) {
 
-    override fun load(webView: android.webkit.WebView?) {
+    override fun load(webView: android.webkit.WebView) {
         super.load(webView)
         // Request POST_NOTIFICATIONS once so Rust's Notifier can fire freely
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&

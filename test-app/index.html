@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Background Service Test App</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #ffffff;
+            color: #333333;
+            padding: 16px;
+            max-width: 400px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            text-align: center;
+        }
+
+        .status-line {
+            display: flex;
+            align-items: center;
+            font-size: 22px;
+            margin-bottom: 8px;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #F44336;
+            margin-right: 8px;
+            flex-shrink: 0;
+        }
+
+        .status-dot.running {
+            background: #4CAF50;
+        }
+
+        .tick-count {
+            font-size: 22px;
+            font-weight: 600;
+            margin-bottom: 16px;
+        }
+
+        .tick-count span {
+            font-variant-numeric: tabular-nums;
+        }
+
+        button {
+            display: block;
+            width: 100%;
+            height: 48px;
+            font-size: 16px;
+            font-weight: 500;
+            color: #ffffff;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            margin-bottom: 8px;
+        }
+
+        #start-btn {
+            background: #4CAF50;
+        }
+
+        #stop-btn {
+            background: #F44336;
+        }
+
+        #check-btn {
+            background: #2196F3;
+            margin-bottom: 16px;
+        }
+
+        h2 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            border-top: 1px solid #e0e0e0;
+            padding-top: 12px;
+        }
+
+        #event-log {
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: "Courier New", Courier, monospace;
+            font-size: 13px;
+            line-height: 1.5;
+            background: #fafafa;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+            padding: 8px;
+        }
+
+        .log-entry {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .log-entry.info {
+            color: #2196F3;
+        }
+
+        .log-entry.tick {
+            color: #4CAF50;
+        }
+
+        .log-entry.error {
+            color: #F44336;
+        }
+
+        .log-entry.stopped {
+            color: #F44336;
+        }
+    </style>
+</head>
+<body>
+    <h1>Background Service Test App</h1>
+
+    <div class="status-line">
+        <div class="status-dot" id="status-dot"></div>
+        <span id="status-text">Stopped</span>
+    </div>
+
+    <div class="tick-count">
+        Tick Count: <span id="tick-count">0</span>
+    </div>
+
+    <button id="start-btn">Start Service</button>
+    <button id="stop-btn">Stop Service</button>
+    <button id="check-btn">Check Status</button>
+
+    <h2>Event Log</h2>
+    <div id="event-log"></div>
+
+    <script type="module">
+        import { invoke } from '@tauri-apps/api/core';
+        import { listen } from '@tauri-apps/api/event';
+
+        function updateStatus(running) {
+            var statusText = document.getElementById('status-text');
+            var statusDot = document.getElementById('status-dot');
+            statusText.textContent = running ? 'Running' : 'Stopped';
+            if (running) {
+                statusDot.classList.add('running');
+            } else {
+                statusDot.classList.remove('running');
+            }
+        }
+
+        function updateTickCount(count) {
+            document.getElementById('tick-count').textContent = count;
+        }
+
+        function addLogEntry(type, detail) {
+            var log = document.getElementById('event-log');
+            var entry = document.createElement('div');
+            entry.className = 'log-entry ' + type;
+            var now = new Date();
+            var time = now.toTimeString().split(' ')[0];
+            entry.textContent = time + ' ' + type + ': ' + detail;
+            log.appendChild(entry);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        // Event listeners — set up first so we don't miss any events
+        async function initListeners() {
+            await listen('background-service://event', (event) => {
+                var payload = event.payload;
+                if (payload.type === 'started') {
+                    updateStatus(true);
+                    addLogEntry('info', 'Service started');
+                } else if (payload.type === 'stopped') {
+                    updateStatus(false);
+                    addLogEntry('stopped', 'Service stopped: ' + (payload.reason || 'unknown'));
+                } else if (payload.type === 'error') {
+                    addLogEntry('error', 'Service error: ' + (payload.message || 'unknown'));
+                }
+            });
+
+            await listen('service-tick', (event) => {
+                var count = event.payload;
+                updateTickCount(count);
+                addLogEntry('tick', 'Tick #' + count);
+            });
+
+            await listen('service-stopped', (event) => {
+                var count = event.payload;
+                updateTickCount(count);
+                addLogEntry('stopped', 'Service stopped at tick #' + count);
+            });
+
+            addLogEntry('info', 'App initialized');
+        }
+
+        initListeners();
+
+        // Button handlers
+        document.getElementById('start-btn').addEventListener('click', async () => {
+            try {
+                await invoke('plugin:background-service|start', { config: { serviceLabel: "Test Service" } });
+            } catch (e) {
+                addLogEntry('error', typeof e === 'string' ? e : (e.message || String(e)));
+            }
+        });
+
+        document.getElementById('stop-btn').addEventListener('click', async () => {
+            try {
+                await invoke('plugin:background-service|stop');
+            } catch (e) {
+                addLogEntry('error', typeof e === 'string' ? e : (e.message || String(e)));
+            }
+        });
+
+        document.getElementById('check-btn').addEventListener('click', async () => {
+            try {
+                var running = await invoke('plugin:background-service|is_running');
+                updateStatus(running);
+                addLogEntry('info', 'Status: ' + (running ? 'Running' : 'Stopped'));
+            } catch (e) {
+                addLogEntry('error', typeof e === 'string' ? e : (e.message || String(e)));
+            }
+        });
+    </script>
+</body>
+</html>
