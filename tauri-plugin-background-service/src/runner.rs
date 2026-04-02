@@ -84,7 +84,7 @@ impl ServiceRunner {
         let shutdown = token.clone();
         *guard = Some(token);
 
-        let my_gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let my_gen = self.generation.fetch_add(1, Ordering::Release) + 1;
 
         drop(guard);
 
@@ -122,7 +122,7 @@ impl ServiceRunner {
                     },
                 );
                 // Clear token only if generation hasn't advanced
-                if gen_ref.load(Ordering::SeqCst) == my_gen {
+                if gen_ref.load(Ordering::Acquire) == my_gen {
                     token_ref.lock().unwrap().take();
                 }
                 // Fire callback with false on init failure (generation-guarded capture)
@@ -139,7 +139,7 @@ impl ServiceRunner {
             let result = service.run(&ctx).await;
 
             // Clear token only if generation hasn't advanced
-            if gen_ref.load(Ordering::SeqCst) == my_gen {
+            if gen_ref.load(Ordering::Acquire) == my_gen {
                 token_ref.lock().unwrap().take();
             }
 
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn generation_starts_at_zero() {
         let runner = ServiceRunner::new();
-        assert_eq!(runner.generation.load(Ordering::SeqCst), 0);
+        assert_eq!(runner.generation.load(Ordering::Acquire), 0);
     }
 
     /// Compile-time test: start() signature compiles with a concrete service type.
@@ -281,7 +281,7 @@ mod tests {
         let called = Arc::new(AtomicU64::new(0));
         let called_clone = called.clone();
         runner.set_on_complete(Box::new(move |_success| {
-            called_clone.fetch_add(1, Ordering::SeqCst);
+            called_clone.fetch_add(1, Ordering::Relaxed);
         }));
         assert!(
             runner.on_complete.lock().unwrap().is_some(),
