@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 
 class LifecycleService : Service() {
@@ -27,8 +28,10 @@ class LifecycleService : Service() {
         if (intent?.action == ACTION_STOP) {
             getSharedPreferences("bg_service", Context.MODE_PRIVATE).edit()
                 .remove("bg_service_label")
+                .remove("bg_service_type")
                 .remove("bg_auto_start_pending")
                 .remove("bg_auto_start_label")
+                .remove("bg_auto_start_type")
                 .apply()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -74,14 +77,16 @@ class LifecycleService : Service() {
         }
 
         // Set auto-start flag for plugin to detect when Activity launches
+        val serviceType = prefs.getString("bg_service_type", "dataSync")!!
         prefs.edit()
             .putBoolean("bg_auto_start_pending", true)
             .putString("bg_auto_start_label", label)
+            .putString("bg_auto_start_type", serviceType)
             .apply()
 
         // Must call startForeground immediately (Android 12+ requirement)
         createChannel()
-        startForegroundTyped(NOTIF_ID, buildNotification("Restarting..."), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        startForegroundTyped(NOTIF_ID, buildNotification("Restarting..."), mapServiceType(serviceType))
         isRunning = true
         autoRestarting = true
 
@@ -104,8 +109,12 @@ class LifecycleService : Service() {
 
     private fun mapServiceType(type: String): Int {
         return when (type) {
+            "dataSync" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
             "specialUse" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-            else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            else -> {
+                Log.w("LifecycleService", "Unrecognized foreground service type: '$type', falling back to DATA_SYNC")
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            }
         }
     }
 

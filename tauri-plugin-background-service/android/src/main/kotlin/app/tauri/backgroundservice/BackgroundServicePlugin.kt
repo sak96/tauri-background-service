@@ -19,6 +19,7 @@ import app.tauri.plugin.Plugin
 class GetAutoStartConfigResult {
     var pending: Boolean = false
     var label: String? = null
+    var serviceType: String? = null
 }
 
 @TauriPlugin
@@ -53,6 +54,7 @@ class BackgroundServicePlugin(private val activity: Activity) : Plugin(activity)
             activity.startService(intent)
         prefs().edit()
             .putString("bg_service_label", args.label)
+            .putString("bg_service_type", args.foregroundServiceType)
             .apply()
         invoke.resolve()
     }
@@ -61,8 +63,10 @@ class BackgroundServicePlugin(private val activity: Activity) : Plugin(activity)
     fun stopKeepalive(invoke: Invoke) {
         prefs().edit()
             .remove("bg_service_label")
+            .remove("bg_service_type")
             .remove("bg_auto_start_pending")
             .remove("bg_auto_start_label")
+            .remove("bg_auto_start_type")
             .apply()
         activity.startService(Intent(activity, LifecycleService::class.java)
             .apply { action = LifecycleService.ACTION_STOP })
@@ -75,6 +79,7 @@ class BackgroundServicePlugin(private val activity: Activity) : Plugin(activity)
         val result = GetAutoStartConfigResult()
         result.pending = p.getBoolean("bg_auto_start_pending", false)
         result.label = p.getString("bg_auto_start_label", null)
+        result.serviceType = p.getString("bg_auto_start_type", null)
         invoke.resolveObject(result)
     }
 
@@ -83,6 +88,7 @@ class BackgroundServicePlugin(private val activity: Activity) : Plugin(activity)
         prefs().edit()
             .remove("bg_auto_start_pending")
             .remove("bg_auto_start_label")
+            .remove("bg_auto_start_type")
             .apply()
         invoke.resolve()
     }

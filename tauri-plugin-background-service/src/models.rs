@@ -69,6 +69,7 @@ pub enum PluginEvent {
 pub struct AutoStartConfig {
     pub pending: bool,
     pub label: Option<String>,
+    pub service_type: Option<String>,
 }
 
 impl AutoStartConfig {
@@ -77,7 +78,9 @@ impl AutoStartConfig {
         if self.pending {
             self.label.map(|label| StartConfig {
                 service_label: label,
-                foreground_service_type: default_foreground_service_type(),
+                foreground_service_type: self
+                    .service_type
+                    .unwrap_or_else(default_foreground_service_type),
             })
         } else {
             None
@@ -276,7 +279,9 @@ mod tests {
         let config: AutoStartConfig = serde_json::from_str(json).unwrap();
         let result = config.into_start_config();
         assert!(result.is_some());
-        assert_eq!(result.unwrap().service_label, "Syncing");
+        let start_config = result.unwrap();
+        assert_eq!(start_config.service_label, "Syncing");
+        assert_eq!(start_config.foreground_service_type, "dataSync");
     }
 
     #[test]
@@ -293,5 +298,36 @@ mod tests {
         let config: AutoStartConfig = serde_json::from_str(json).unwrap();
         let result = config.into_start_config();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn auto_start_config_with_service_type_preserves_it() {
+        let json = r#"{"pending":true,"label":"test","serviceType":"specialUse"}"#;
+        let config: AutoStartConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.service_type, Some("specialUse".to_string()));
+        let result = config.into_start_config();
+        assert!(result.is_some());
+        let start_config = result.unwrap();
+        assert_eq!(start_config.foreground_service_type, "specialUse");
+    }
+
+    #[test]
+    fn auto_start_config_without_service_type_uses_default() {
+        let json = r#"{"pending":true,"label":"test"}"#;
+        let config: AutoStartConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.service_type, None);
+        let result = config.into_start_config();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().foreground_service_type, "dataSync");
+    }
+
+    #[test]
+    fn auto_start_config_null_service_type_uses_default() {
+        let json = r#"{"pending":true,"label":"test","serviceType":null}"#;
+        let config: AutoStartConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.service_type, None);
+        let result = config.into_start_config();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().foreground_service_type, "dataSync");
     }
 }

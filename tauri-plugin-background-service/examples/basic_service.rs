@@ -16,11 +16,13 @@ use tauri_plugin_background_service::{BackgroundService, ServiceContext, Service
 /// - Using `tokio::select!` with `ctx.shutdown.cancelled()` for clean shutdown
 /// - Emitting custom events to the JS layer via `ctx.app.emit()`
 /// - Sending local notifications via `ctx.notifier.show()`
+#[allow(dead_code)]
 struct ExampleService {
     tick_count: u64,
 }
 
 impl ExampleService {
+    #[allow(dead_code)]
     fn new() -> Self {
         Self { tick_count: 0 }
     }

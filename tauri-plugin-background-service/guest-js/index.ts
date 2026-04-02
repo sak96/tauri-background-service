@@ -5,6 +5,11 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 export interface StartConfig {
   /** Text shown in the Android persistent foreground notification */
   serviceLabel?: string;
+  /**
+   * Android foreground service type. Valid values: `"dataSync"` (default), `"specialUse"`.
+   * Ignored on non-Android platforms.
+   */
+  foregroundServiceType?: string;
 }
 
 /** Built-in plugin lifecycle events */
