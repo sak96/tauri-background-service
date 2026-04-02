@@ -82,6 +82,7 @@ class LifecycleService : Service() {
         // Must call startForeground immediately (Android 12+ requirement)
         createChannel()
         startForegroundTyped(NOTIF_ID, buildNotification("Restarting..."), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        isRunning = true
         autoRestarting = true
 
         // Launch Activity to reinitialize Tauri runtime
