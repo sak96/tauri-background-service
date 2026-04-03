@@ -1,22 +1,19 @@
-# Review Plan: Code Quality Review
+# Review Plan: Code Quality Review (Iteration 2)
 
-## Step 1: Primary Pass (CURRENT — COMPLETED)
-- Read all Rust, Kotlin, Swift, and TypeScript source files
-- Run all unit + integration tests (57/57 PASS)
-- Identify highest-risk area: start command ordering in lib.rs
-- Findings written to findings.md
+## Step 1: Primary Pass (COMPLETED — this iteration)
+- Read all Rust + Swift source files
+- Previous review's critical ordering issue was fixed by actor pattern
+- Identified 3 new critical/high issues:
+  - C1: Swift duplicate property (compile error)
+  - C2: Dead code runner.rs
+  - C3: Hardcoded iOS timeout
 
-## Step 2: Deep Analysis — start command ordering (NEXT)
-Investigate the start command calling start_keepalive before AlreadyRunning check:
-1. Trace exact code path when service is already running and user calls start again
-2. Verify Android behavior: does LifecycleService re-enter onStartCommand correctly?
-3. Verify iOS behavior: does the orphaned callback cause any issues?
-4. Check if the test app or any real usage would trigger this path
-5. Propose fix: move is_running check before start_keepalive call
-6. Document whether this is a real bug or acceptable behavior
+## Step 2: Deep Analysis — Swift duplicate & dead code verification
+- Confirm the duplicate `safetyTimeout` declaration in Swift
+- Verify `runner.rs` is fully dead code: grep all usage sites beyond tests
+- Check if PluginConfig wiring is straightforward or blocked by Tauri API constraints
+- Verify actor rollback logic is sound under all failure paths
 
-## Final Step: Synthesis and Completion
-- Consolidate findings from Steps 1-2
-- Produce final review report with verdict
-- If ordering bug is confirmed harmful: REQUEST_CHANGES
-- If ordering bug is acceptable with documented caveat: APPROVE
+## Step 3: Synthesis (closer)
+- Finalize findings report
+- Approve or request changes

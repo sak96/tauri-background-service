@@ -15,6 +15,14 @@ pub struct ServiceContext<R: Runtime> {
 
     /// Cancelled when `stopService()` is called.
     pub shutdown: CancellationToken,
+
+    /// Text shown in the Android persistent notification.
+    /// `None` on desktop platforms.
+    pub service_label: Option<String>,
+
+    /// Android foreground service type (e.g. "dataSync", "specialUse").
+    /// `None` on desktop platforms.
+    pub foreground_service_type: Option<String>,
 }
 
 /// Optional startup configuration forwarded from JS through the plugin.
@@ -38,6 +46,20 @@ fn default_foreground_service_type() -> String {
     "dataSync".into()
 }
 
+/// Plugin-level configuration, deserialized from the Tauri plugin config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginConfig {
+    /// iOS safety timeout in seconds for the expiration handler.
+    /// Default: 28.0 (Apple recommends keeping BG tasks under ~30s).
+    #[serde(default = "default_ios_safety_timeout")]
+    pub ios_safety_timeout_secs: f64,
+}
+
+fn default_ios_safety_timeout() -> f64 {
+    28.0
+}
+
 impl Default for StartConfig {
     fn default() -> Self {
         Self {
@@ -58,6 +80,27 @@ pub enum PluginEvent {
     Stopped { reason: String },
     /// init() or run() returned an error
     Error { message: String },
+}
+
+impl Default for PluginConfig {
+    fn default() -> Self {
+        Self {
+            ios_safety_timeout_secs: default_ios_safety_timeout(),
+        }
+    }
+}
+
+/// Arguments sent to the native `startKeepalive` handler.
+///
+/// Lives in `models.rs` (not `mobile.rs`) so serde tests run on all platforms.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StartKeepaliveArgs<'a> {
+    pub label: &'a str,
+    pub foreground_service_type: &'a str,
+    /// iOS safety timeout in seconds. Only sent to iOS; `None` omits the key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ios_safety_timeout_secs: Option<f64>,
 }
 
 /// Auto-start config returned by the Kotlin bridge.
@@ -329,5 +372,114 @@ mod tests {
         let result = config.into_start_config();
         assert!(result.is_some());
         assert_eq!(result.unwrap().foreground_service_type, "dataSync");
+    }
+
+    // --- PluginConfig tests ---
+
+    #[test]
+    fn plugin_config_default_ios_safety_timeout() {
+        let json = "{}";
+        let config: PluginConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.ios_safety_timeout_secs, 28.0);
+    }
+
+    #[test]
+    fn plugin_config_custom_ios_safety_timeout() {
+        let json = r#"{"iosSafetyTimeoutSecs":15.0}"#;
+        let config: PluginConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.ios_safety_timeout_secs, 15.0);
+    }
+
+    #[test]
+    fn plugin_config_serde_roundtrip_preserves_value() {
+        let config = PluginConfig {
+            ios_safety_timeout_secs: 30.0,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let de: PluginConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(de.ios_safety_timeout_secs, 30.0);
+    }
+
+    #[test]
+    fn plugin_config_default_impl() {
+        let config = PluginConfig::default();
+        assert_eq!(config.ios_safety_timeout_secs, 28.0);
+    }
+
+    // --- StartKeepaliveArgs tests ---
+
+    #[test]
+    fn start_keepalive_args_with_timeout() {
+        let args = StartKeepaliveArgs {
+            label: "Test",
+            foreground_service_type: "dataSync",
+            ios_safety_timeout_secs: Some(15.0),
+        };
+        let json = serde_json::to_string(&args).unwrap();
+        assert!(
+            json.contains("\"iosSafetyTimeoutSecs\":15.0"),
+            "JSON should contain iosSafetyTimeoutSecs: {json}"
+        );
+    }
+
+    #[test]
+    fn start_keepalive_args_without_timeout() {
+        let args = StartKeepaliveArgs {
+            label: "Test",
+            foreground_service_type: "dataSync",
+            ios_safety_timeout_secs: None,
+        };
+        let json = serde_json::to_string(&args).unwrap();
+        assert!(
+            !json.contains("iosSafetyTimeoutSecs"),
+            "JSON should NOT contain iosSafetyTimeoutSecs when None: {json}"
+        );
+    }
+
+    #[test]
+    fn start_keepalive_args_camel_case_keys() {
+        let args = StartKeepaliveArgs {
+            label: "Test",
+            foreground_service_type: "specialUse",
+            ios_safety_timeout_secs: None,
+        };
+        let json = serde_json::to_string(&args).unwrap();
+        assert!(json.contains("\"label\""), "label: {json}");
+        assert!(
+            json.contains("\"foregroundServiceType\""),
+            "foregroundServiceType: {json}"
+        );
+    }
+
+    use tauri::AppHandle;
+
+    // --- ServiceContext new fields tests ---
+
+    /// Compile-time + runtime test: ServiceContext accepts the new optional fields.
+    #[allow(dead_code)]
+    fn service_context_new_fields_default_to_none<R: Runtime>(app: AppHandle<R>) {
+        let ctx = ServiceContext {
+            notifier: Notifier { app: app.clone() },
+            app,
+            shutdown: CancellationToken::new(),
+            service_label: None,
+            foreground_service_type: None,
+        };
+        assert_eq!(ctx.service_label, None);
+        assert_eq!(ctx.foreground_service_type, None);
+    }
+
+    /// Compile-time + runtime test: ServiceContext carries label and type values.
+    #[allow(dead_code)]
+    fn service_context_new_fields_with_values<R: Runtime>(app: AppHandle<R>) {
+        let ctx = ServiceContext {
+            notifier: Notifier { app: app.clone() },
+            app,
+            shutdown: CancellationToken::new(),
+            service_label: Some("Syncing".into()),
+            foreground_service_type: Some("dataSync".into()),
+        };
+        assert_eq!(ctx.service_label.as_deref(), Some("Syncing"));
+        assert_eq!(ctx.foreground_service_type.as_deref(), Some("dataSync"));
     }
 }

@@ -1,4 +1,5 @@
 pub mod error;
+pub mod manager;
 pub mod models;
 pub mod notifier;
 pub mod runner;
@@ -10,6 +11,7 @@ pub mod mobile;
 // ─── Public API Surface ──────────────────────────────────────────────────────
 
 pub use error::ServiceError;
+pub use manager::ServiceManagerHandle;
 pub use models::{AutoStartConfig, PluginEvent, ServiceContext, StartConfig};
 pub use notifier::Notifier;
 pub use runner::ServiceRunner;
@@ -17,16 +19,18 @@ pub use service_trait::BackgroundService;
 
 // ─── Internal Imports ────────────────────────────────────────────────────────
 
-use std::sync::Arc;
-
 use tauri::{
     plugin::{Builder, TauriPlugin},
     AppHandle, Manager, Runtime,
 };
 
+use crate::manager::{ManagerCommand, ServiceFactory, manager_loop};
+
+#[cfg(mobile)]
+use crate::manager::MobileKeepalive;
+
 #[cfg(mobile)]
 use mobile::MobileLifecycle;
-
 
 // ─── iOS Plugin Binding ──────────────────────────────────────────────────────
 // Must be at module level. Referenced by mobile::init() when registering
@@ -35,79 +39,63 @@ use mobile::MobileLifecycle;
 #[cfg(target_os = "ios")]
 tauri::ios_plugin_binding!(init_plugin_background_service);
 
-// ─── Service Factory Holder ──────────────────────────────────────────────────
-
-/// Type-erased factory closure: creates `Box<dyn BackgroundService<R>>` on demand.
-///
-/// Stored in [`ServiceRunnerHolder`] so commands can create service instances
-/// without knowing the concrete type.
-type ServiceFactory<R> = Box<dyn Fn() -> Box<dyn BackgroundService<R>> + Send + Sync>;
-
-/// Holds a [`ServiceRunner`] and a [`ServiceFactory`], stored as managed state.
-struct ServiceRunnerHolder<R: Runtime> {
-    runner: ServiceRunner,
-    factory: ServiceFactory<R>,
-}
-
-impl<R: Runtime> ServiceRunnerHolder<R> {
-    /// Invoke the factory to produce a fresh service, then delegate to the runner.
-    fn start(&self, app: AppHandle<R>, config: StartConfig) -> Result<(), ServiceError> {
-        let service = (self.factory)();
-        self.runner.start_boxed(app, service, config)
-    }
-}
-
 // ─── iOS Lifecycle Helpers ────────────────────────────────────────────────────
 
 /// Set the on_complete callback so iOS `completeBgTask` fires when `run()` finishes.
 ///
-/// Must be called **before** `holder.start()` because `start_boxed()` captures the
-/// callback via `take()` at spawn time.
+/// Sends `SetOnComplete` to the actor. Must be called **before** `Start` because
+/// `handle_start` captures the callback via `take()` at spawn time.
 #[cfg(target_os = "ios")]
-fn ios_set_on_complete_callback<R: Runtime>(app: &AppHandle<R>) {
-    let mobile = app.state::<MobileLifecycle<R>>();
+async fn ios_set_on_complete_callback<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let mobile = app.state::<Arc<MobileLifecycle<R>>>();
     let mobile_handle = mobile.handle.clone();
-    let holder = app.state::<Arc<ServiceRunnerHolder<R>>>();
+    let manager = app.state::<ServiceManagerHandle<R>>();
 
     let mob_for_complete = MobileLifecycle {
         handle: mobile_handle,
     };
-    holder.runner.set_on_complete(Box::new(move |success| {
-        let _ = mob_for_complete.complete_bg_task(success);
-    }));
+    manager
+        .cmd_tx
+        .send(ManagerCommand::SetOnComplete {
+            callback: Box::new(move |success| {
+                let _ = mob_for_complete.complete_bg_task(success);
+            }),
+        })
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(not(target_os = "ios"))]
-fn ios_set_on_complete_callback<R: Runtime>(_app: &AppHandle<R>) {}
+async fn ios_set_on_complete_callback<R: Runtime>(_app: &AppHandle<R>) -> Result<(), String> {
+    Ok(())
+}
 
 /// Spawn a blocking thread that waits for the iOS expiration signal (`waitForCancel`).
 ///
-/// Must be called **after** `holder.start()` so the service is running when the
-/// cancel listener begins waiting.
+/// Must be called **after** `Start` succeeds so the service is running when the
+/// cancel listener begins waiting. Sends `Stop` to the actor when cancelled.
 #[cfg(target_os = "ios")]
 fn ios_spawn_cancel_listener<R: Runtime>(app: &AppHandle<R>) {
-    let mobile = app.state::<MobileLifecycle<R>>();
+    let mobile = app.state::<Arc<MobileLifecycle<R>>>();
     let mobile_handle = mobile.handle.clone();
+    let manager = app.state::<ServiceManagerHandle<R>>();
+    let cmd_tx = manager.cmd_tx.clone();
 
-    let app_for_cancel = app.clone();
     tokio::spawn(async move {
         let handle = tokio::task::spawn_blocking(move || {
             let mob = MobileLifecycle {
                 handle: mobile_handle,
             };
-            match mob.wait_for_cancel() {
-                Ok(()) => {
-                    let holder = app_for_cancel.state::<Arc<ServiceRunnerHolder<R>>>();
-                    let _ = holder.runner.stop();
-                }
-                Err(_) => {
-                    // Invoke rejected (normal completion) — exit thread
-                }
-            }
+            mob.wait_for_cancel()
         });
         // 24-hour safety timeout prevents indefinite thread leaks if iOS
         // invoke is never resolved (e.g., iOS kills the app).
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(86400), handle).await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(86400), handle).await;
+        if let Ok(Ok(Ok(()))) = result {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let _ = cmd_tx.send(ManagerCommand::Stop { reply: tx }).await;
+            let _ = rx.await;
+        }
     });
 }
 
@@ -118,17 +106,27 @@ fn ios_spawn_cancel_listener<R: Runtime>(_app: &AppHandle<R>) {}
 
 #[tauri::command]
 async fn start<R: Runtime>(app: AppHandle<R>, config: StartConfig) -> Result<(), String> {
-    #[cfg(mobile)]
-    app.state::<MobileLifecycle<R>>()
-        .start_keepalive(&config.service_label, &config.foreground_service_type)
+    // iOS: send SetOnComplete before Start so the callback is captured at spawn time.
+    ios_set_on_complete_callback(&app).await?;
+
+    // Mobile keepalive is now handled by the actor (Step 5).
+    // The actor calls start_keepalive AFTER the AlreadyRunning check.
+
+    let manager = app.state::<ServiceManagerHandle<R>>();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    manager
+        .cmd_tx
+        .send(ManagerCommand::Start {
+            config,
+            reply: tx,
+            app: app.clone(),
+        })
+        .await
         .map_err(|e| e.to_string())?;
 
-    ios_set_on_complete_callback(&app);
+    rx.await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
 
-    app.state::<Arc<ServiceRunnerHolder<R>>>()
-        .start(app.clone(), config)
-        .map_err(|e| e.to_string())?;
-
+    // iOS: spawn cancel listener after Start succeeds.
     ios_spawn_cancel_listener(&app);
 
     Ok(())
@@ -136,24 +134,30 @@ async fn start<R: Runtime>(app: AppHandle<R>, config: StartConfig) -> Result<(),
 
 #[tauri::command]
 async fn stop<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    app.state::<Arc<ServiceRunnerHolder<R>>>()
-        .runner
-        .stop()
+    let manager = app.state::<ServiceManagerHandle<R>>();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    manager
+        .cmd_tx
+        .send(ManagerCommand::Stop { reply: tx })
+        .await
         .map_err(|e| e.to_string())?;
 
-    #[cfg(mobile)]
-    app.state::<MobileLifecycle<R>>()
-        .stop_keepalive()
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
+    rx.await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn is_running<R: Runtime>(app: AppHandle<R>) -> bool {
-    app.state::<Arc<ServiceRunnerHolder<R>>>()
-        .runner
-        .is_running()
+async fn is_running<R: Runtime>(app: AppHandle<R>) -> bool {
+    let manager = app.state::<ServiceManagerHandle<R>>();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    if manager
+        .cmd_tx
+        .send(ManagerCommand::IsRunning { reply: tx })
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    rx.await.unwrap_or(false)
 }
 
 // ─── Plugin Builder ──────────────────────────────────────────────────────────
@@ -176,29 +180,62 @@ where
     Builder::new("background-service")
         .invoke_handler(tauri::generate_handler![start, stop, is_running])
         .setup(move |app, _api| {
-            app.manage(Arc::new(ServiceRunnerHolder {
-                runner: ServiceRunner::new(),
-                factory: boxed_factory,
-            }));
+            let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(16);
+            let handle = ServiceManagerHandle::new(cmd_tx);
+            app.manage(handle);
+
+            let ios_safety_timeout_secs = 28.0; // TODO: read from PluginConfig
+
+            let factory = boxed_factory;
+            tauri::async_runtime::spawn(manager_loop(cmd_rx, factory, ios_safety_timeout_secs));
 
             #[cfg(mobile)]
             {
                 let lifecycle = mobile::init(app, _api)?;
-                app.manage(lifecycle);
+                let lifecycle_arc = std::sync::Arc::new(lifecycle);
+
+                // Send SetMobile to actor so keepalive is managed by the actor.
+                let mobile_trait: Arc<dyn MobileKeepalive> = lifecycle_arc.clone();
+                let _ = cmd_tx.try_send(ManagerCommand::SetMobile { mobile: mobile_trait });
+
+                // Store for iOS callbacks and Android auto-start helpers.
+                app.manage(lifecycle_arc);
             }
 
             // Android: auto-start detection after OS-initiated service restart.
             // When LifecycleService is restarted by START_STICKY, it sets an
             // auto-start flag in SharedPreferences and launches the Activity.
-            // This block detects that flag, clears it, and starts the service.
+            // This block detects that flag, clears it, and starts the service
+            // via the actor.
             #[cfg(target_os = "android")]
             {
-                let mobile = app.state::<MobileLifecycle<R>>();
+                let mobile = app.state::<Arc<MobileLifecycle<R>>>();
                 if let Ok(Some(config)) = mobile.get_auto_start_config() {
                     let _ = mobile.clear_auto_start_config();
-                    let _ = mobile.start_keepalive(&config.service_label, &config.foreground_service_type);
-                    let holder = app.state::<Arc<ServiceRunnerHolder<R>>>();
-                    let _ = holder.start(app.clone(), config);
+
+                    // Keepalive is now handled by the actor's handle_start.
+                    // Just send Start command — actor will call start_keepalive.
+
+                    let manager = app.state::<ServiceManagerHandle<R>>();
+                    let cmd_tx = manager.cmd_tx.clone();
+                    let app_clone = app.handle().clone();
+
+                    tauri::async_runtime::spawn(async move {
+                        let (tx, rx) = tokio::sync::oneshot::channel();
+                        if cmd_tx
+                            .send(ManagerCommand::Start {
+                                config,
+                                reply: tx,
+                                app: app_clone,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                        let _ = rx.await;
+                    });
+
                     let _ = mobile.move_task_to_background();
                 }
             }
@@ -238,12 +275,9 @@ mod tests {
     // ── Construction Tests ───────────────────────────────────────────────
 
     #[test]
-    fn service_runner_holder_constructs() {
-        let holder = ServiceRunnerHolder::<tauri::Wry> {
-            runner: ServiceRunner::new(),
-            factory: Box::new(|| Box::new(DummyService)),
-        };
-        assert!(!holder.runner.is_running());
+    fn service_manager_handle_constructs() {
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::channel(16);
+        let _handle: ServiceManagerHandle<tauri::Wry> = ServiceManagerHandle::new(cmd_tx);
     }
 
     #[test]
@@ -253,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn holder_factory_creates_fresh_instances() {
+    fn handle_factory_creates_fresh_instances() {
         let count = Arc::new(AtomicUsize::new(0));
         let count_clone = count.clone();
 
@@ -262,13 +296,8 @@ mod tests {
             Box::new(DummyService)
         });
 
-        let holder = ServiceRunnerHolder::<tauri::Wry> {
-            runner: ServiceRunner::new(),
-            factory,
-        };
-
-        let _ = (holder.factory)();
-        let _ = (holder.factory)();
+        let _ = (factory)();
+        let _ = (factory)();
 
         assert_eq!(count.load(Ordering::SeqCst), 2);
     }
@@ -300,9 +329,9 @@ mod tests {
         stop(app).await
     }
 
-    /// Verify `is_running` command signature is generic over `R: Runtime`.
+    /// Verify `is_running` command signature is async and generic over `R: Runtime`.
     #[allow(dead_code)]
-    fn is_running_command_signature<R: Runtime>(app: AppHandle<R>) -> bool {
-        is_running(app)
+    async fn is_running_command_signature<R: Runtime>(app: AppHandle<R>) -> bool {
+        is_running(app).await
     }
 }

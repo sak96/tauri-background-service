@@ -12,7 +12,13 @@ import WebKit
     // MARK: - State for C1: BGTask lifecycle management
     private var currentTask: BGAppRefreshTask?
     private var pendingCancelInvoke: Invoke?
+    /// Configurable safety timeout from Rust (PluginConfig). Default: 28.0s.
+    /// Apple recommends keeping BG tasks under ~30s.
+    private var safetyTimeout: TimeInterval = 28.0
     private var safetyTimer: Timer?
+    /// iOS safety timeout (default: 28.0s, Apple recommends keeping BG tasks under ~30s).
+    /// Set via `startKeepalive` args from Rust (PluginConfig).
+    private var safetyTimeout: TimeInterval = 28.0
 
     public override func load(webView: WKWebView) {
         super.load(webView)
@@ -70,7 +76,7 @@ import WebKit
     // MARK: - Safety Timer (C1: 25-second fallback)
     private func startSafetyTimer() {
         safetyTimer?.invalidate()
-        safetyTimer = Timer.scheduledTimer(withTimeInterval: 25.0, repeats: false) { [weak self] _ in
+        safetyTimer = Timer.scheduledTimer(withTimeInterval: self.safetyTimeout, repeats: false) { [weak self] _ in
             self?.handleSafetyTimerExpiration()
         }
     }
@@ -136,8 +142,13 @@ import WebKit
         invoke.resolve()
     }
 
-    // MARK: - startKeepalive (unchanged)
+    // MARK: - startKeepalive (configurable iOS safety timer)
     @objc public func startKeepalive(_ invoke: Invoke) {
+        // Read configurable timeout from Rust (default: 28.0s via PluginConfig)
+        if let args = invoke.args(as: [String: Any].self),
+           let timeout = args["iosSafetyTimeoutSecs"] as? Double {
+            safetyTimeout = timeout
+        }
         scheduleNext()
         invoke.resolve()
     }

@@ -69,6 +69,8 @@ mod tests {
             notifier: Notifier { app: app.clone() },
             app,
             shutdown: CancellationToken::new(),
+            service_label: None,
+            foreground_service_type: None,
         };
     }
 }

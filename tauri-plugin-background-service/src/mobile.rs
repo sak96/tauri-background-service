@@ -4,7 +4,9 @@ use tauri::{
     AppHandle, Runtime,
 };
 
-use crate::models::{AutoStartConfig, StartConfig};
+use crate::error::ServiceError;
+use crate::manager::MobileKeepalive;
+use crate::models::{AutoStartConfig, StartConfig, StartKeepaliveArgs};
 
 /// Rust-side bridge to native mobile keepalive code.
 ///
@@ -14,22 +16,18 @@ pub struct MobileLifecycle<R: Runtime> {
     pub handle: PluginHandle<R>,
 }
 
-/// Arguments sent to the native `startKeepalive` handler.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StartKeepaliveArgs<'a> {
-    label: &'a str,
-    foreground_service_type: &'a str,
-}
-
 impl<R: Runtime> MobileLifecycle<R> {
     /// Start the OS-specific keepalive mechanism.
     ///
     /// - Android: starts a Foreground Service with `label` as notification text.
     /// - iOS: schedules a `BGAppRefreshTask`.
-    pub fn start_keepalive(&self, label: &str, foreground_service_type: &str) -> Result<(), tauri::Error> {
+    pub fn start_keepalive(&self, label: &str, foreground_service_type: &str, ios_safety_timeout_secs: Option<f64>) -> Result<(), tauri::Error> {
         self.handle
-            .run_mobile_plugin::<()>("startKeepalive", StartKeepaliveArgs { label, foreground_service_type })?;
+            .run_mobile_plugin::<()>("startKeepalive", StartKeepaliveArgs {
+                label,
+                foreground_service_type,
+                ios_safety_timeout_secs,
+            })?;
         Ok(())
     }
 
@@ -96,6 +94,18 @@ impl<R: Runtime> MobileLifecycle<R> {
 #[serde(rename_all = "camelCase")]
 struct CompleteBgTaskArgs {
     success: bool,
+}
+
+impl<R: Runtime> MobileKeepalive for MobileLifecycle<R> {
+    fn start_keepalive(&self, label: &str, foreground_service_type: &str, ios_safety_timeout_secs: Option<f64>) -> Result<(), ServiceError> {
+        self.start_keepalive(label, foreground_service_type, ios_safety_timeout_secs)
+            .map_err(|e| ServiceError::Platform(e.to_string()))
+    }
+
+    fn stop_keepalive(&self) -> Result<(), ServiceError> {
+        self.stop_keepalive()
+            .map_err(|e| ServiceError::Platform(e.to_string()))
+    }
 }
 
 /// Canonical Tauri v2 mobile init function.

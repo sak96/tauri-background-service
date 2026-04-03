@@ -105,6 +105,8 @@ impl ServiceRunner {
             notifier: Notifier { app: app.clone() },
             app: app.clone(),
             shutdown,
+            service_label: None,
+            foreground_service_type: None,
         };
 
         // Use tauri::async_runtime::spawn() instead of tokio::spawn() because

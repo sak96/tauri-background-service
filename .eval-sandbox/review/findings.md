@@ -1,120 +1,119 @@
-# Code Review: tauri-plugin-background-service
+# Code Review: tauri-plugin-background-service (Iteration 2)
 
 ## Files Reviewed
-- [x] tauri-plugin-background-service/src/runner.rs
-- [x] tauri-plugin-background-service/src/lib.rs
-- [x] tauri-plugin-background-service/src/models.rs
-- [x] tauri-plugin-background-service/src/mobile.rs
-- [x] tauri-plugin-background-service/src/service_trait.rs
-- [x] tauri-plugin-background-service/src/notifier.rs
-- [x] tauri-plugin-background-service/src/error.rs
-- [x] tauri-plugin-background-service/Cargo.toml
-- [x] tauri-plugin-background-service/build.rs
-- [x] tauri-plugin-background-service/permissions/default.toml
-- [x] tauri-plugin-background-service/guest-js/index.ts
-- [x] tauri-plugin-background-service/android/src/main/kotlin/app/tauri/backgroundservice/LifecycleService.kt
-- [x] tauri-plugin-background-service/android/src/main/kotlin/app/tauri/backgroundservice/BackgroundServicePlugin.kt
-- [x] tauri-plugin-background-service/ios/Sources/TauriPluginBackgroundService/BackgroundServicePlugin.swift
-- [x] test-app/src-tauri/src/lib.rs
-- [x] test-app/index.html
+- [x] src/lib.rs
+- [x] src/manager.rs (new file — actor pattern)
+- [x] src/runner.rs
+- [x] src/models.rs
+- [x] src/mobile.rs
+- [x] src/service_trait.rs
+- [x] src/error.rs
+- [x] src/notifier.rs
+- [x] ios/Sources/TauriPluginBackgroundService/BackgroundServicePlugin.swift
 
-## Summary
-COMMENT — one significant architectural concern requiring deep analysis. Overall code quality is high: generation counter pattern, callback capture, and lifecycle management are well-designed. All 57 tests pass.
+## Summary: REQUEST_CHANGES
 
-## Test Results
-- Unit tests: 45/45 PASS
-- Integration tests: 12/12 PASS
-- Doc tests: 0 passed, 1 ignored (expected — requires Tauri context)
+The actor pattern refactoring resolved the previous review's critical ordering issue (start_keepalive before AlreadyRunning). The manager now checks AlreadyRunning first, then starts keepalive with rollback. However, new issues were found.
 
-## Critical Issues (Must Investigate)
+## Critical Issues (Must Fix)
 
-### 1. start command calls native layer BEFORE AlreadyRunning check
-**Severity:** High
-**Location:** `lib.rs:120-135`
-**Description:** The `start` Tauri command executes in this order:
-1. `start_keepalive()` — starts Android foreground service / schedules iOS BGTask
-2. `ios_set_on_complete_callback()` — overwrites the on_complete callback slot
-3. `holder.start()` — checks AlreadyRunning, returns error if running
-4. `ios_spawn_cancel_listener()` — skipped if step 3 errors
+### C1. Swift: Duplicate `safetyTimeout` property declaration
+**Severity:** CRITICAL (compile error)
+**Location:** `BackgroundServicePlugin.swift:17` and `:21`
 
-If the service is already running, step 3 returns `AlreadyRunning` but steps 1-2 already executed. This means:
-- **Android:** A new START intent is sent to LifecycleService, which calls `startForeground()` again and updates the notification. The user gets an error but the foreground notification flickers.
-- **iOS:** `scheduleNext()` is called (harmless — same identifier), and the on_complete callback is overwritten (orphaned — the running task captured the old one).
-- **State desync:** The mobile native layer believes a new service was started, but the Rust runner rejected it.
-
-**Confidence:** 85 (confirmed ordering issue with concrete failure paths)
-
-### Deep Analysis: start command ordering (adversarial pass)
-
-**Root cause:** `lib.rs:121-126` execute native side-effects before `holder.start()` performs the authoritative `AlreadyRunning` check under the token Mutex (`runner.rs:77-81`).
-
-**Failure path 1 — Double start from JS:**
-1. User calls `start()` → succeeds
-2. User calls `start()` again → `start_keepalive()` succeeds (Android: `startForeground()` fires again; iOS: `scheduleNext()` fires), `ios_set_on_complete_callback()` writes orphaned callback into Mutex slot, then `holder.start()` returns `AlreadyRunning`
-3. JS receives error, but native state was mutated
-4. Android: notification flickers; iOS: orphaned callback (leaked closure holding `PluginHandle`)
-
-**Failure path 2 — Concurrent stop+start race (most severe):**
-1. Thread A (stop): `runner.stop()` acquires token Mutex, takes+cancel token, drops lock
-2. Thread B (start): `start_keepalive()` starts new native keepalive
-3. Thread A (stop): `stop_keepalive()` stops native keepalive — **kills B's keepalive**
-4. Thread B (start): `holder.start()` acquires token Mutex, sees `None` (A cleared it), succeeds — service runs
-5. **Result: Service running without native keepalive. Android may kill process; iOS may suspend app.**
-
-This race exists because keepalive operations are not serialized with token operations. Tauri commands are independent async tasks — they CAN interleave.
-
-**Failure path 3 — Auto-start same ordering issue:**
-`lib.rs:199-201`: auto-start path calls `start_keepalive()` before `holder.start()`, and ignores all results (`let _`). Same desync potential, though less likely at setup time.
-
-**Secondary concern — Fix introduces new risk:**
-Moving `start_keepalive()` after `holder.start()` creates a window where the service runs without native keepalive. If `start_keepalive()` fails, the service MUST be rolled back (call `runner.stop()`) to avoid running unprotected.
-
-**Recommended fix structure:**
-```rust
-async fn start<R: Runtime>(app: AppHandle<R>, config: StartConfig) -> Result<(), String> {
-    ios_set_on_complete_callback(&app);   // Must precede start_boxed (take() at spawn)
-
-    app.state::<Arc<ServiceRunnerHolder<R>>>()
-        .start(app.clone(), config.clone())
-        .map_err(|e| e.to_string())?;
-
-    #[cfg(mobile)]
-    if let Err(e) = app.state::<MobileLifecycle<R>>()
-        .start_keepalive(&config.service_label, &config.foreground_service_type)
-    {
-        let holder = app.state::<Arc<ServiceRunnerHolder<R>>>();
-        let _ = holder.runner.stop();  // Rollback
-        return Err(e.to_string());
-    }
-
-    ios_spawn_cancel_listener(&app);
-    Ok(())
-}
+Two stored properties with identical name and type:
+```swift
+private var safetyTimeout: TimeInterval = 28.0  // line 17
+private var safetyTimeout: TimeInterval = 28.0  // line 21
 ```
-Note: `StartConfig` derives `Clone` (`models.rs:21`). The `config` value is unused by `start_boxed()` (`runner.rs:93`: `let _config = config`) — it's only needed for keepalive labels. Future refactor could avoid the clone.
+This is a Swift compile error (redeclaration of stored property). **Blocks all iOS builds.** One must be removed.
 
-**Note on stop→start race:** The fix above addresses the `AlreadyRunning` ordering but does NOT fully resolve the concurrent stop+start race (failure path 2). A complete fix requires serializing stop and start commands (e.g., an async Mutex wrapping both the runner stop and the keepalive stop/start). This is an architectural change beyond a single-command fix.
+### C2. Dead code: `runner.rs` duplicates `manager.rs` logic
+**Severity:** High (architectural)
+**Location:** `src/runner.rs` (entire file)
+
+The actor pattern in `manager.rs` has fully replaced `ServiceRunner` as the lifecycle manager:
+- `lib.rs` imports only from `manager.rs` (`ServiceManagerHandle`, `manager_loop`, `ServiceFactory`, `MobileKeepalive`)
+- `runner.rs`'s `ServiceRunner::start_boxed()` duplicates `manager.rs`'s `handle_start()` logic
+- `runner.rs` hardcodes `service_label: None` and `foreground_service_type: None` (lines 108-109), while `manager.rs` correctly passes config values (lines 195-196)
+- Yet `runner.rs` is still `pub use`'d at `lib.rs:17`, exposing dead code in the public API
+
+If someone uses `ServiceRunner` directly, config values are silently lost.
+
+### C3. Hardcoded iOS safety timeout — PluginConfig not read
+**Severity:** Medium (correctness)
+**Location:** `lib.rs:187`
+
+```rust
+let ios_safety_timeout_secs = 28.0; // TODO: read from PluginConfig
+```
+
+`PluginConfig` defines `ios_safety_timeout_secs` with serde support, but it's never deserialized from the actual Tauri plugin config. Users cannot configure this value — it's always the default.
 
 ## Suggestions (Should Consider)
 
-### 1. Forward StartConfig to service init()
-`runner.rs:91-93` suppresses the `StartConfig` with `let _config = config;`. Services currently cannot access the label or service type. Consider extending `ServiceContext` or passing config to `init()` so services can use these values.
+### S1. `handle_stop` propagates `stop_keepalive` errors
+`manager.rs:274` — `mobile.stop_keepalive()?` propagates native errors. By this point the token is already cancelled (service task will stop). Consider logging and swallowing the error — the user's `stop()` call already succeeded in its primary goal.
 
-### 2. Add logging to LifecycleService
-`LifecycleService.kt` has almost no logging. Only one `Log.w` for unrecognized service types (line 115). Adding `Log.d` calls in `onStartCommand`, `handleOsRestart`, and `startForegroundTyped` would significantly help production debugging.
+### S2. 24-hour cancel listener timeout is excessive
+`lib.rs:93` — `Duration::from_secs(86400)` for the iOS cancel listener. If the invoke is never resolved, a thread leaks for 24 hours. Consider a shorter timeout (2-4 hours) or making it configurable.
 
-### 3. iOS safety timer is 25s — consider 28-29s
-`BackgroundServicePlugin.swift:73` uses a 25-second safety timer. iOS typically gives ~30 seconds for BGAppRefreshTask. A task completing at 28s would be force-killed by the safety timer. Consider using 28-29 seconds or making it configurable.
+### S3. `runner.rs` should be removed or deprecated
+If `ServiceRunner` is dead code, remove it from the public API and the module tree. Keeping it risks confusion and divergence.
 
 ## Positive Notes
-- Generation counter pattern is correctly implemented for stop→start race conditions
-- Token cleanup is generation-guarded (won't clear new service's token)
-- on_complete callback captured at spawn time prevents stale callback issues
-- init() failure path correctly fires callback with false and clears token
-- Comprehensive unit tests for serde models (33 model tests)
-- Integration tests cover real async lifecycle (start/stop/init-failure/on-complete/generation-guard)
-- iOS Pending Invoke pattern is well-documented in comments
-- `tauri::async_runtime::spawn()` correctly used for Android auto-start compatibility
-- Serde `#[non_exhaustive]` on PluginEvent prevents API breakage
-- Swift code uses `[weak self]` correctly to prevent retain cycles
-- Android companion object `@Volatile` vars are appropriate for cross-thread visibility
+- Actor pattern with sequential command processing correctly resolves the previous ordering issue
+- Generation counter prevents stale cleanup from old tasks
+- Callback captured at spawn time prevents the A/B callback bug
+- Keepalive failure rollback in `handle_start` (lines 176-182) is correct: clears token, restores callback
+- Excellent test coverage in manager.rs — 13+ tokio tests covering lifecycle, callbacks, rollback
+- iOS safety timeout now configurable via `PluginConfig` model (just not wired up yet)
+- Clean separation: models, error types, trait definition, mobile bridge
+
+---
+
+## Deep Analysis: Swift Dead Property & Dead Code runner.rs (Step 2)
+
+### C1 CONFIRMED — Swift duplicate `safetyTimeout` (compile error)
+
+**Evidence:** `BackgroundServicePlugin.swift` lines 17 and 21 both declare `private var safetyTimeout: TimeInterval = 28.0`. Swift forbids duplicate stored properties — this is an **unconditional compile error** that blocks all iOS builds.
+
+**Root cause:** The property at line 17 has comment "Configurable safety timeout from Rust (PluginConfig). Default: 28.0s." and the duplicate at line 21 has comment "Set via `startKeepalive` args from Rust (PluginConfig)." This is a merge/copy-paste artifact: someone added an updated version of the property with a better comment without removing the original.
+
+**Fix:** Remove lines 15-17 (the first declaration). Keep lines 19-21 (the second declaration with the more accurate comment about `startKeepalive`). The `safetyTimer` property at line 18 stays.
+
+### C2 CONFIRMED — `runner.rs` is dead code, but still in public API + integration tests
+
+**Evidence:**
+- All production code paths go through `ServiceManagerHandle` → `manager_loop` (actor pattern). Zero production code calls `ServiceRunner` methods.
+- `ServiceRunner` is still `pub use`'d at `lib.rs:17`, exposing it as public API.
+- **12 integration tests** in `tests/integration.rs` use `ServiceRunner::new()` directly — these test the OLD code path that was replaced by the actor. They give a false sense of security.
+- `runner.rs` has bugs the actor doesn't:
+  - Lines 108-109: `service_label: None, foreground_service_type: None` — silently drops config values
+  - Line 93: `let _config = config;` — suppresses the unused-config warning, hiding the data loss
+  - No mobile keepalive integration at all
+  - No `PluginConfig` timeout support
+
+**Risk:** A consumer could use `ServiceRunner` directly (it's public API) and silently lose `service_label`, `foreground_service_type`, and mobile keepalive.
+
+**Recommendation:** Remove `pub use runner::ServiceRunner` from `lib.rs`, gate `runner.rs` behind `#[cfg(test)]` or delete it, and rewrite integration tests to use the actor path via `ServiceManagerHandle`.
+
+### C3 CONFIRMED — Hardcoded timeout, but wiring is 95% complete
+
+**Evidence:**
+- `lib.rs:187`: `let ios_safety_timeout_secs = 28.0; // TODO: read from PluginConfig`
+- `PluginConfig` in `models.rs` has full serde support + default of 28.0 + 4 passing tests
+- The actor-to-mobile wiring IS complete: `ServiceState.ios_safety_timeout_secs` → `start_keepalive()` → `StartKeepaliveArgs` → Swift `startKeepalive` reads `iosSafetyTimeoutSecs`
+- Only missing: `init_with_service`'s setup closure never reads `PluginConfig` from Tauri plugin config
+
+**Fix:** In `init_with_service`, use Tauri's plugin config API to deserialize `PluginConfig` and pass the timeout to `manager_loop`. This is a one-line change plus a `use crate::models::PluginConfig`.
+
+### Additional Finding: Integration tests test wrong code path
+
+All 12 integration tests in `tests/integration.rs` exercise `ServiceRunner` directly — a dead code path. None test the actual production actor path through `ServiceManagerHandle`. This means:
+- Production code (actor) has only 13 unit tests in `manager.rs` (no integration-level tests)
+- The "integration" tests are actually dead-code tests
+- The manager's `ServiceContext` population (service_label, foreground_service_type) has no integration test coverage
+
+### Rust test results
+All 79 tests pass (67 unit + 12 integration + 0 doc-tests). The codebase compiles cleanly on desktop. The Swift compile error only manifests on iOS builds.
