@@ -3,6 +3,18 @@ name = "tauri-plugin-background-service"
 version = "0.1.0"
 edition = "2021"
 links = "tauri-plugin-background-service"
+description = "Background service lifecycle plugin for Tauri v2 — run long-lived tasks on Android, iOS, and desktop"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/dardourimohamed/tauri-background-service"
+readme = "README.md"
+keywords = ["tauri", "background", "service", "android", "ios"]
+categories = ["gui", "asynchronous", "os", "api-bindings"]
+rust-version = "1.77.2"
+authors = ["Mohamed Dardouri <med@dardouri.com>"]
+exclude = ["test-app/", "docs/", ".*", "examples/"]
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu", "aarch64-linux-android", "aarch64-apple-ios"]
 
 [lib]
 crate-type = ["staticlib", "cdylib", "rlib"]

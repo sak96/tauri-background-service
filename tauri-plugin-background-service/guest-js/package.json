@@ -1,9 +1,10 @@
 {
   "name": "tauri-plugin-background-service",
-  "version": "2.0.0",
+  "version": "0.1.0",
+  "description": "Manage long-lived background service lifecycle in Tauri v2 apps across Android, iOS, and desktop.",
   "license": "MIT OR Apache-2.0",
   "authors": [
-    "Tauri Programme within The Commons Conservancy"
+    "Mohamed Dardouri <med@dardouri.com>"
   ],
   "type": "module",
   "types": "./dist-js/index.d.ts",
@@ -15,13 +16,33 @@
     "require": "./dist-js/index.cjs"
   },
   "scripts": {
-    "build": "rollup -c"
+    "build": "rollup -c",
+    "prepublishOnly": "npm run build"
   },
   "files": [
     "dist-js",
     "README.md",
     "LICENSE"
   ],
+  "keywords": [
+    "tauri",
+    "tauri-plugin",
+    "background",
+    "service",
+    "foreground-service",
+    "android",
+    "ios",
+    "mobile",
+    "lifecycle"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dardourimohamed/tauri-background-service.git"
+  },
+  "homepage": "https://github.com/dardourimohamed/tauri-background-service#readme",
+  "bugs": {
+    "url": "https://github.com/dardourimohamed/tauri-background-service/issues"
+  },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0"
   },

@@ -1,3 +1,9 @@
+//! Thin wrapper around [`tauri_plugin_notification`] for fire-and-forget
+//! local notifications.
+//!
+//! Errors are logged but never propagated — callers should not need to
+//! handle notification failures.
+
 use tauri::{AppHandle, Runtime};
 use tauri_plugin_notification::NotificationExt;
 

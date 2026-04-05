@@ -1,3 +1,13 @@
+//! Mobile lifecycle bridge — only compiled on Android and iOS targets.
+//!
+//! Provides [`MobileLifecycle`] which wraps native keepalive calls via
+//! `run_mobile_plugin`:
+//!
+//! - **Android** — Foreground service with persistent notification.
+//! - **iOS** — `BGTaskScheduler` with expiration handler.
+//!
+//! This module is gated behind `#[cfg(mobile)]` in [`crate::lib`].
+
 use serde::Serialize;
 use tauri::{
     plugin::{PluginApi, PluginHandle},

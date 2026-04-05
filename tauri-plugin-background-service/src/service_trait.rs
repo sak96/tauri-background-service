@@ -1,3 +1,9 @@
+//! The [`BackgroundService`] trait — the single entry point for user code.
+//!
+//! Implement this trait to define a background service. The plugin creates
+//! a fresh instance via the factory closure passed to
+//! [`init_with_service`](crate::init_with_service) on each start.
+
 use async_trait::async_trait;
 use tauri::Runtime;
 

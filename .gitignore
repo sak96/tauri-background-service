@@ -24,3 +24,5 @@ Thumbs.db
 # Agent/orchestration artifacts
 .agents/
 .ralph/
+.worktrees/
+.eval-sandbox/

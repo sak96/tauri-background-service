@@ -1,3 +1,53 @@
+#![doc(html_root_url = "https://docs.rs/tauri-plugin-background-service/0.1.0")]
+
+//! # tauri-plugin-background-service
+//!
+//! A [Tauri](https://tauri.app) v2 plugin that manages long-lived background service
+//! lifecycle across **Android**, **iOS**, and **Desktop**.
+//!
+//! Users implement the [`BackgroundService`] trait; the plugin handles OS-specific
+//! keepalive (Android foreground service, iOS `BGTaskScheduler`), cancellation via
+//! [`CancellationToken`](tokio_util::sync::CancellationToken), and state management
+//! through an actor pattern.
+//!
+//! ## Quick Start
+//!
+//! ```rust,ignore
+//! use tauri_plugin_background_service::{
+//!     BackgroundService, ServiceContext, ServiceError, init_with_service,
+//! };
+//!
+//! struct MyService;
+//!
+//! #[async_trait::async_trait]
+//! impl<R: tauri::Runtime> BackgroundService<R> for MyService {
+//!     async fn init(&mut self, _ctx: &ServiceContext<R>) -> Result<(), ServiceError> {
+//!         Ok(())
+//!     }
+//!
+//!     async fn run(&mut self, ctx: &ServiceContext<R>) -> Result<(), ServiceError> {
+//!         tokio::select! {
+//!             _ = ctx.shutdown.cancelled() => Ok(()),
+//!             _ = do_work(ctx) => Ok(()),
+//!         }
+//!     }
+//! }
+//!
+//! tauri::Builder::default()
+//!     .plugin(init_with_service(|| MyService))
+//! ```
+//!
+//! ## Platform Behavior
+//!
+//! | Platform | Keepalive Mechanism | Auto-restart |
+//! |----------|-------------------|-------------|
+//! | Android | Foreground service with persistent notification (`START_STICKY`) | Yes |
+//! | iOS | `BGTaskScheduler` with expiration handler | No |
+//! | Desktop | Plain `tokio::spawn` | No |
+//!
+//! See the [project repository](https://github.com/dardourimohamed/tauri-background-service)
+//! for detailed platform guides and API documentation.
+
 pub mod error;
 pub mod manager;
 pub mod models;
@@ -10,8 +60,11 @@ pub mod mobile;
 // ─── Public API Surface ──────────────────────────────────────────────────────
 
 pub use error::ServiceError;
+#[doc(hidden)]
 pub use manager::{manager_loop, OnCompleteCallback, ServiceFactory, ServiceManagerHandle};
-pub use models::{AutoStartConfig, PluginConfig, PluginEvent, ServiceContext, StartConfig};
+#[doc(hidden)]
+pub use models::AutoStartConfig;
+pub use models::{PluginConfig, PluginEvent, ServiceContext, StartConfig};
 pub use notifier::Notifier;
 pub use service_trait::BackgroundService;
 

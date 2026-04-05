@@ -1,5 +1,7 @@
 # tauri-plugin-background-service
 
+[![crates.io](https://img.shields.io/crates/v/tauri-plugin-background-service.svg)](https://crates.io/crates/tauri-plugin-background-service) [![docs.rs](https://docs.rs/tauri-plugin-background-service/badge.svg)](https://docs.rs/tauri-plugin-background-service) [![npm](https://img.shields.io/npm/v/tauri-plugin-background-service.svg)](https://www.npmjs.com/package/tauri-plugin-background-service) [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](https://github.com/dardourimohamed/tauri-background-service/blob/main/LICENSE)
+
 A Tauri v2 plugin that manages long-lived background service lifecycle across all platforms (Android, iOS, Windows, macOS, Linux).
 
 You implement a single `BackgroundService` trait on your own struct. The plugin spawns it in a Tokio task, keeps the OS from killing it on mobile, and provides helpers for notifications and event emission. No business logic lives in the plugin — only lifecycle management.
@@ -192,37 +194,23 @@ While the app is foregrounded, your `run()` loop executes continuously. When bac
 
 No special OS integration is needed. The service runs as a standard Tokio task and continues as long as the app process is alive.
 
-## File Structure
+## Links
 
-```
-tauri-plugin-background-service/
-├── src/
-│   ├── lib.rs              Plugin registration, init_with_service()
-│   ├── error.rs            ServiceError enum
-│   ├── models.rs           ServiceContext, StartConfig, PluginEvent
-│   ├── service_trait.rs    BackgroundService trait
-│   ├── notifier.rs         Notifier (wraps tauri-plugin-notification)
-│   └── mobile.rs           MobileLifecycle bridge (mobile only)
-├── android/src/main/
-│   ├── AndroidManifest.xml
-│   └── kotlin/app/tauri/backgroundservice/
-│       ├── BackgroundServicePlugin.kt
-│       └── LifecycleService.kt
-├── ios/Sources/TauriPluginBackgroundService/
-│   └── BackgroundServicePlugin.swift
-├── guest-js/
-│   ├── index.ts            TypeScript API
-│   └── package.json
-├── permissions/
-│   └── default.toml        Default permission set
-├── examples/
-│   └── basic_service.rs    Example service implementation
-├── tests/
-│   └── integration.rs      Integration tests
-├── build.rs                tauri-plugin build script
-└── Cargo.toml
-```
+**Documentation** (relative paths — works on GitHub and crates.io):
+- [Getting Started](./docs/getting-started.md)
+- [API Reference](./docs/api-reference.md)
+- [Android Guide](./docs/android.md)
+- [iOS Guide](./docs/ios.md)
+- [Desktop Guide](./docs/desktop.md)
+- [Troubleshooting](./docs/troubleshooting.md)
+- [Migration Guide](./docs/migration-guide.md)
+
+**Community** (absolute URLs — required for crates.io compatibility):
+- [Contributing](https://github.com/dardourimohamed/tauri-background-service/blob/main/CONTRIBUTING.md)
+- [Changelog](https://github.com/dardourimohamed/tauri-background-service/blob/main/CHANGELOG.md)
+- [Security](https://github.com/dardourimohamed/tauri-background-service/blob/main/SECURITY.md)
+- [Architecture](https://github.com/dardourimohamed/tauri-background-service/blob/main/ARCHITECTURE.md)
 
 ## License
 
-SPDX-License-Identifier: MIT
+SPDX-License-Identifier: MIT OR Apache-2.0

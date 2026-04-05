@@ -1,0 +1,74 @@
+name: Bug Report
+description: Report a bug in tauri-plugin-background-service
+labels: ["bug"]
+body:
+  - type: input
+    id: tauri-version
+    attributes:
+      label: Tauri Version
+      description: Which version of Tauri are you using?
+      placeholder: "e.g., 2.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin Version
+      description: Which version of tauri-plugin-background-service are you using?
+      placeholder: "e.g., 0.1.0"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: platform
+    attributes:
+      label: Platform
+      description: Which platform(s) are affected?
+      options:
+        - label: Android
+        - label: iOS
+        - label: Windows
+        - label: macOS
+        - label: Linux
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: Actual Behavior
+      description: What actually happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps-to-reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce this issue?
+      placeholder: |
+        1. Start service with config '...'
+        2. Trigger background task
+        3. Observe error
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs
+      description: |
+        Paste any relevant log output.
+        - Android: `adb logcat -s LifecycleService:V`
+        - iOS: Xcode console
+        - Desktop: terminal output or `RUST_LOG=tauri_plugin_background_service=debug`
+      render: shell
+    validations:
+      required: false

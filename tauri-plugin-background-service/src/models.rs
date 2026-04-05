@@ -1,3 +1,9 @@
+//! Data types shared between the plugin's Rust core and the JS/Tauri layer.
+//!
+//! - [`ServiceContext`] is passed to every [`BackgroundService`](crate::BackgroundService) method.
+//! - [`StartConfig`] and [`PluginConfig`] control service and plugin behaviour.
+//! - [`PluginEvent`] represents events emitted to the JavaScript front-end.
+
 use serde::{Deserialize, Serialize};
 use tauri::Runtime;
 use tokio_util::sync::CancellationToken;
@@ -118,6 +124,7 @@ pub(crate) struct StartKeepaliveArgs<'a> {
 ///
 /// Deserialized from SharedPreferences values read by `getAutoStartConfig`.
 /// Only used on Android (the iOS path doesn't have auto-start).
+#[doc(hidden)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoStartConfig {

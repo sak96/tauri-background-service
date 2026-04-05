@@ -1,3 +1,13 @@
+//! Actor-based service manager.
+//!
+//! The [`manager_loop`] function runs as a single-owner Tokio task that receives
+//! [`ManagerCommand`] messages through an `mpsc` channel. This serialises all
+//! state mutations (start, stop, is_running) and prevents concurrent interleaving.
+//!
+//! Most of this module is `pub(crate)` — the public API surface is re-exported
+//! from the crate root. Items that are `pub` only for the iOS lifecycle bridge
+//! are marked `#[doc(hidden)]`.
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -11,6 +21,7 @@ use crate::notifier::Notifier;
 use crate::service_trait::BackgroundService;
 
 /// Callback fired when the service task completes. Receives `true` on success.
+#[doc(hidden)]
 pub type OnCompleteCallback = Box<dyn Fn(bool) + Send + Sync>;
 
 /// Abstraction over mobile keepalive operations.
@@ -26,12 +37,15 @@ pub(crate) trait MobileKeepalive: Send + Sync {
 }
 
 /// Type-erased factory: produces a fresh `Box<dyn BackgroundService<R>>` on demand.
+#[doc(hidden)]
 pub type ServiceFactory<R> =
     Box<dyn Fn() -> Box<dyn BackgroundService<R>> + Send + Sync>;
 
 // ─── Commands ───────────────────────────────────────────────────────────
 
 /// Commands sent to the service manager actor.
+///
+/// Internal implementation detail — not part of the public API.
 ///
 /// This enum is `#[non_exhaustive]` to prevent external construction.
 /// Use [`ServiceManagerHandle`] methods instead.
@@ -128,6 +142,7 @@ impl<R: Runtime> ServiceManagerHandle<R> {
     ///
     /// The callback is captured at spawn time (generation-guarded), so calling
     /// this while a service is running will only affect the *next* start.
+    #[doc(hidden)]
     pub async fn set_on_complete(&self, callback: OnCompleteCallback) {
         let _ = self
             .cmd_tx
@@ -166,6 +181,7 @@ struct ServiceState<R: Runtime> {
 ///
 /// Runs as a spawned Tokio task. The loop exits when all `Sender` halves
 /// are dropped (i.e., the handle is dropped).
+#[doc(hidden)]
 pub async fn manager_loop<R: Runtime>(
     mut rx: mpsc::Receiver<ManagerCommand<R>>,
     factory: ServiceFactory<R>,

@@ -1,18 +1,29 @@
+//! Error types returned by background service operations.
+//!
+//! [`ServiceError`] is `#[non_exhaustive]` — new variants may be added in
+//! minor releases. Match with a wildcard `_` arm to avoid breakage.
+
+/// Errors that can occur during background service lifecycle.
 #[derive(Debug, thiserror::Error, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum ServiceError {
+    /// A service is already running; call `stopService()` first.
     #[error("Service is already running")]
     AlreadyRunning,
 
+    /// No service is currently running.
     #[error("Service is not running")]
     NotRunning,
 
+    /// The service's `init()` method failed.
     #[error("Initialisation failed: {0}")]
     Init(String),
 
+    /// A runtime error occurred inside the service's `run()` method.
     #[error("Runtime error: {0}")]
     Runtime(String),
 
+    /// A platform-specific error (e.g. Android foreground service denied).
     #[error("Platform error: {0}")]
     Platform(String),
 }
