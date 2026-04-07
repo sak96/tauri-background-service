@@ -10,8 +10,9 @@ You implement a single `BackgroundService` trait on your own struct. The plugin 
 
 | Capability | Android | iOS | Desktop (Win/macOS/Linux) |
 |---|---|---|---|
-| Service runs in background | Foreground Service | Best-effort BGTask | Standard Tokio task |
-| Service survives app close | `START_STICKY` | No | No |
+| Service runs in background | Foreground Service | BGAppRefreshTask + BGProcessingTask | Standard Tokio task |
+| OS service mode | — | — | systemd / launchd (`desktop-service` feature) |
+| Service survives app close | `START_STICKY` | No | In-process: No; OS service: Yes |
 | Local notifications | Yes | Yes | Yes |
 
 ## Installation
@@ -24,7 +25,7 @@ Add the plugin to your app's `Cargo.toml`:
 [dependencies]
 tauri = { version = "2" }
 tauri-plugin-notification = "2"
-tauri-plugin-background-service = { path = "../tauri-plugin-background-service" }
+tauri-plugin-background-service = "0.2"
 ```
 
 ### npm (TypeScript API)

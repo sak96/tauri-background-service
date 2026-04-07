@@ -10,6 +10,11 @@ export interface StartConfig {
    * Ignored on non-Android platforms.
    */
   foregroundServiceType?: string;
+  /**
+   * Service execution mode. `"in-process"` runs in the app process (default).
+   * `"os-service"` runs as an OS-managed daemon (desktop only, requires `desktop-service` feature).
+   */
+  mode?: "in-process" | "os-service";
 }
 
 /** Built-in plugin lifecycle events */
@@ -45,4 +50,23 @@ export async function onPluginEvent(
   handler: (event: PluginEvent) => void
 ): Promise<UnlistenFn> {
   return listen<PluginEvent>('background-service://event', e => handler(e.payload));
+}
+
+// ─── Desktop OS Service Management ────────────────────────────────────
+// These commands are only available when the `desktop-service` feature is enabled.
+// They are no-ops (command not found) on mobile platforms.
+
+/** Install the background service as an OS-managed daemon (desktop only). */
+export async function installService(): Promise<void> {
+  await invoke('plugin:background-service|install_service');
+}
+
+/** Uninstall the OS-managed background service daemon (desktop only). */
+export async function uninstallService(): Promise<void> {
+  await invoke('plugin:background-service|uninstall_service');
+}
+
+/** Query the status of the OS-managed background service (desktop only). */
+export async function serviceStatus(): Promise<string> {
+  return invoke<string>('plugin:background-service|service_status');
 }

@@ -1,4 +1,4 @@
-#![doc(html_root_url = "https://docs.rs/tauri-plugin-background-service/0.1.0")]
+#![doc(html_root_url = "https://docs.rs/tauri-plugin-background-service/0.2.0")]
 
 //! # tauri-plugin-background-service
 //!
@@ -57,6 +57,9 @@ pub mod service_trait;
 #[cfg(mobile)]
 pub mod mobile;
 
+#[cfg(feature = "desktop-service")]
+pub mod desktop;
+
 // ─── Public API Surface ──────────────────────────────────────────────────────
 
 pub use error::ServiceError;
@@ -67,6 +70,9 @@ pub use models::AutoStartConfig;
 pub use models::{PluginConfig, PluginEvent, ServiceContext, StartConfig};
 pub use notifier::Notifier;
 pub use service_trait::BackgroundService;
+
+#[cfg(feature = "desktop-service")]
+pub use desktop::headless::headless_main;
 
 // ─── Internal Imports ────────────────────────────────────────────────────────
 
@@ -157,6 +163,16 @@ fn ios_spawn_cancel_listener<R: Runtime>(_app: &AppHandle<R>, _timeout_secs: u64
 
 #[tauri::command]
 async fn start<R: Runtime>(app: AppHandle<R>, config: StartConfig) -> Result<(), String> {
+    // OS service mode: route through IPC sidecar.
+    #[cfg(feature = "desktop-service")]
+    if let Some(ipc_state) = app.try_state::<DesktopIpcState>() {
+        let mut client = desktop::ipc_client::IpcClient::connect(ipc_state.socket_path.clone())
+            .await
+            .map_err(|e| e.to_string())?;
+        return client.start(config).await.map_err(|e| e.to_string());
+    }
+
+    // In-process mode (default).
     // iOS: send SetOnComplete before Start so the callback is captured at spawn time.
     ios_set_on_complete_callback(&app).await?;
 
@@ -186,6 +202,16 @@ async fn start<R: Runtime>(app: AppHandle<R>, config: StartConfig) -> Result<(),
 
 #[tauri::command]
 async fn stop<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    // OS service mode: route through IPC sidecar.
+    #[cfg(feature = "desktop-service")]
+    if let Some(ipc_state) = app.try_state::<DesktopIpcState>() {
+        let mut client = desktop::ipc_client::IpcClient::connect(ipc_state.socket_path.clone())
+            .await
+            .map_err(|e| e.to_string())?;
+        return client.stop().await.map_err(|e| e.to_string());
+    }
+
+    // In-process mode (default).
     let manager = app.state::<ServiceManagerHandle<R>>();
     let (tx, rx) = tokio::sync::oneshot::channel();
     manager
@@ -199,6 +225,17 @@ async fn stop<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
 
 #[tauri::command]
 async fn is_running<R: Runtime>(app: AppHandle<R>) -> bool {
+    // OS service mode: route through IPC sidecar.
+    #[cfg(feature = "desktop-service")]
+    if let Some(ipc_state) = app.try_state::<DesktopIpcState>() {
+        let client = desktop::ipc_client::IpcClient::connect(ipc_state.socket_path.clone()).await;
+        return match client {
+            Ok(mut c) => c.is_running().await.unwrap_or(false),
+            Err(_) => false,
+        };
+    }
+
+    // In-process mode (default).
     let manager = app.state::<ServiceManagerHandle<R>>();
     let (tx, rx) = tokio::sync::oneshot::channel();
     if manager
@@ -210,6 +247,51 @@ async fn is_running<R: Runtime>(app: AppHandle<R>) -> bool {
         return false;
     }
     rx.await.unwrap_or(false)
+}
+
+// ─── Desktop OS Service State & Commands ──────────────────────────────────────
+
+/// Managed state indicating OS service mode via IPC.
+///
+/// When present as managed state, the `start`/`stop`/`is_running` commands
+/// route through [`IpcClient`](desktop::ipc_client::IpcClient) instead of the
+/// in-process actor loop.
+#[cfg(feature = "desktop-service")]
+struct DesktopIpcState {
+    socket_path: std::path::PathBuf,
+}
+
+#[cfg(feature = "desktop-service")]
+#[tauri::command]
+async fn install_service<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    use desktop::service_manager::{derive_service_label, DesktopServiceManager};
+    let plugin_config = app.state::<PluginConfig>();
+    let label = derive_service_label(&app, plugin_config.desktop_service_label.as_deref());
+    let exec_path = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mgr = DesktopServiceManager::new(&label, exec_path).map_err(|e| e.to_string())?;
+    mgr.install().map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "desktop-service")]
+#[tauri::command]
+async fn uninstall_service<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    use desktop::service_manager::{derive_service_label, DesktopServiceManager};
+    let plugin_config = app.state::<PluginConfig>();
+    let label = derive_service_label(&app, plugin_config.desktop_service_label.as_deref());
+    let exec_path = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mgr = DesktopServiceManager::new(&label, exec_path).map_err(|e| e.to_string())?;
+    mgr.uninstall().map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "desktop-service")]
+#[tauri::command]
+async fn service_status<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
+    use desktop::service_manager::{derive_service_label, DesktopServiceManager};
+    let plugin_config = app.state::<PluginConfig>();
+    let label = derive_service_label(&app, plugin_config.desktop_service_label.as_deref());
+    let exec_path = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mgr = DesktopServiceManager::new(&label, exec_path).map_err(|e| e.to_string())?;
+    mgr.status().map_err(|e| e.to_string())
 }
 
 // ─── Plugin Builder ──────────────────────────────────────────────────────────
@@ -230,7 +312,17 @@ where
     let boxed_factory: ServiceFactory<R> = Box::new(move || Box::new(factory()));
 
     Builder::<R, PluginConfig>::new("background-service")
-        .invoke_handler(tauri::generate_handler![start, stop, is_running])
+        .invoke_handler(tauri::generate_handler![
+            start,
+            stop,
+            is_running,
+            #[cfg(feature = "desktop-service")]
+            install_service,
+            #[cfg(feature = "desktop-service")]
+            uninstall_service,
+            #[cfg(feature = "desktop-service")]
+            service_status,
+        ])
         .setup(move |app, api| {
             let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(16);
             let handle = ServiceManagerHandle::new(cmd_tx);
@@ -240,9 +332,39 @@ where
             app.manage(config.clone());
 
             let ios_safety_timeout_secs = config.ios_safety_timeout_secs;
+            let ios_processing_safety_timeout_secs = config.ios_processing_safety_timeout_secs;
 
-            let factory = boxed_factory;
-            tauri::async_runtime::spawn(manager_loop(cmd_rx, factory, ios_safety_timeout_secs));
+            // Mode dispatch: spawn in-process actor or configure IPC for OS service.
+            #[cfg(feature = "desktop-service")]
+            if config.desktop_service_mode == "osService" {
+                // OS service mode: no actor loop, store IPC socket path.
+                let label = desktop::service_manager::derive_service_label(
+                    app,
+                    config.desktop_service_label.as_deref(),
+                );
+                let socket_path = desktop::ipc::socket_path(&label);
+                app.manage(DesktopIpcState { socket_path });
+            } else {
+                // In-process mode (default): spawn the actor loop.
+                let factory = boxed_factory;
+                tauri::async_runtime::spawn(manager_loop(
+                    cmd_rx,
+                    factory,
+                    ios_safety_timeout_secs,
+                    ios_processing_safety_timeout_secs,
+                ));
+            }
+
+            #[cfg(not(feature = "desktop-service"))]
+            {
+                let factory = boxed_factory;
+                tauri::async_runtime::spawn(manager_loop(
+                    cmd_rx,
+                    factory,
+                    ios_safety_timeout_secs,
+                    ios_processing_safety_timeout_secs,
+                ));
+            }
 
             #[cfg(mobile)]
             {
@@ -388,5 +510,49 @@ mod tests {
     #[allow(dead_code)]
     async fn is_running_command_signature<R: Runtime>(app: AppHandle<R>) -> bool {
         is_running(app).await
+    }
+
+    // ── Desktop IPC State Tests ─────────────────────────────────────────
+
+    /// Verify DesktopIpcState can be constructed with a socket path.
+    #[cfg(feature = "desktop-service")]
+    #[test]
+    fn desktop_ipc_state_stores_socket_path() {
+        let state = DesktopIpcState {
+            socket_path: std::path::PathBuf::from("/tmp/test-service.sock"),
+        };
+        assert_eq!(
+            state.socket_path,
+            std::path::PathBuf::from("/tmp/test-service.sock")
+        );
+    }
+
+    // ── Desktop Command Compile-time Tests ────────────────────────────────
+
+    /// Verify `install_service` command signature is generic over `R: Runtime`.
+    #[cfg(feature = "desktop-service")]
+    #[allow(dead_code)]
+    async fn install_service_command_signature<R: Runtime>(
+        app: AppHandle<R>,
+    ) -> Result<(), String> {
+        install_service(app).await
+    }
+
+    /// Verify `uninstall_service` command signature is generic over `R: Runtime`.
+    #[cfg(feature = "desktop-service")]
+    #[allow(dead_code)]
+    async fn uninstall_service_command_signature<R: Runtime>(
+        app: AppHandle<R>,
+    ) -> Result<(), String> {
+        uninstall_service(app).await
+    }
+
+    /// Verify `service_status` command signature is generic over `R: Runtime`.
+    #[cfg(feature = "desktop-service")]
+    #[allow(dead_code)]
+    async fn service_status_command_signature<R: Runtime>(
+        app: AppHandle<R>,
+    ) -> Result<String, String> {
+        service_status(app).await
     }
 }

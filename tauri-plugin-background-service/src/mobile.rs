@@ -30,13 +30,17 @@ impl<R: Runtime> MobileLifecycle<R> {
     /// Start the OS-specific keepalive mechanism.
     ///
     /// - Android: starts a Foreground Service with `label` as notification text.
-    /// - iOS: schedules a `BGAppRefreshTask`.
-    pub fn start_keepalive(&self, label: &str, foreground_service_type: &str, ios_safety_timeout_secs: Option<f64>) -> Result<(), tauri::Error> {
+    /// - iOS: schedules a `BGAppRefreshTask` (and optionally a `BGProcessingTask`).
+    ///
+    /// `ios_processing_safety_timeout_secs` caps the processing task duration on iOS.
+    /// When `None`, the processing task has no safety cap.
+    pub fn start_keepalive(&self, label: &str, foreground_service_type: &str, ios_safety_timeout_secs: Option<f64>, ios_processing_safety_timeout_secs: Option<f64>) -> Result<(), tauri::Error> {
         self.handle
             .run_mobile_plugin::<()>("startKeepalive", StartKeepaliveArgs {
                 label,
                 foreground_service_type,
                 ios_safety_timeout_secs,
+                ios_processing_safety_timeout_secs,
             })?;
         Ok(())
     }
@@ -107,8 +111,8 @@ struct CompleteBgTaskArgs {
 }
 
 impl<R: Runtime> MobileKeepalive for MobileLifecycle<R> {
-    fn start_keepalive(&self, label: &str, foreground_service_type: &str, ios_safety_timeout_secs: Option<f64>) -> Result<(), ServiceError> {
-        self.start_keepalive(label, foreground_service_type, ios_safety_timeout_secs)
+    fn start_keepalive(&self, label: &str, foreground_service_type: &str, ios_safety_timeout_secs: Option<f64>, ios_processing_safety_timeout_secs: Option<f64>) -> Result<(), ServiceError> {
+        self.start_keepalive(label, foreground_service_type, ios_safety_timeout_secs, ios_processing_safety_timeout_secs)
             .map_err(|e| ServiceError::Platform(e.to_string()))
     }
 

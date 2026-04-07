@@ -65,6 +65,26 @@ pub struct PluginConfig {
     /// Default: 14400 (4 hours). Balances leak risk vs. service lifetime.
     #[serde(default = "default_ios_cancel_listener_timeout_secs")]
     pub ios_cancel_listener_timeout_secs: u64,
+
+    /// iOS BGProcessingTask safety timeout in seconds.
+    /// Default: 0.0 (no cap). Processing tasks can run for minutes/hours,
+    /// so unlike BGAppRefreshTask (28s default), this defaults to uncapped.
+    /// Set to a positive value to impose a hard cap on processing task duration.
+    #[serde(default = "default_ios_processing_safety_timeout_secs")]
+    pub ios_processing_safety_timeout_secs: f64,
+
+    /// Desktop service mode: "inProcess" (default) or "osService".
+    /// Controls whether the background service runs in-process or as a
+    /// registered OS service/daemon.
+    #[cfg(feature = "desktop-service")]
+    #[serde(default = "default_desktop_service_mode")]
+    pub desktop_service_mode: String,
+
+    /// Optional custom label for the desktop OS service registration.
+    /// When `None`, the label is auto-derived from the app identifier.
+    #[cfg(feature = "desktop-service")]
+    #[serde(default)]
+    pub desktop_service_label: Option<String>,
 }
 
 fn default_ios_safety_timeout() -> f64 {
@@ -73,6 +93,15 @@ fn default_ios_safety_timeout() -> f64 {
 
 fn default_ios_cancel_listener_timeout_secs() -> u64 {
     14400
+}
+
+fn default_ios_processing_safety_timeout_secs() -> f64 {
+    0.0
+}
+
+#[cfg(feature = "desktop-service")]
+fn default_desktop_service_mode() -> String {
+    "inProcess".into()
 }
 
 impl Default for StartConfig {
@@ -102,6 +131,11 @@ impl Default for PluginConfig {
         Self {
             ios_safety_timeout_secs: default_ios_safety_timeout(),
             ios_cancel_listener_timeout_secs: default_ios_cancel_listener_timeout_secs(),
+            ios_processing_safety_timeout_secs: default_ios_processing_safety_timeout_secs(),
+            #[cfg(feature = "desktop-service")]
+            desktop_service_mode: default_desktop_service_mode(),
+            #[cfg(feature = "desktop-service")]
+            desktop_service_label: None,
         }
     }
 }
@@ -118,6 +152,10 @@ pub(crate) struct StartKeepaliveArgs<'a> {
     /// iOS safety timeout in seconds. Only sent to iOS; `None` omits the key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ios_safety_timeout_secs: Option<f64>,
+    /// iOS BGProcessingTask safety timeout in seconds. Only sent to iOS; `None` omits the key.
+    /// When `Some(positive)`, caps the processing task duration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ios_processing_safety_timeout_secs: Option<f64>,
 }
 
 /// Auto-start config returned by the Kotlin bridge.
@@ -413,6 +451,8 @@ mod tests {
         let config = PluginConfig {
             ios_safety_timeout_secs: 30.0,
             ios_cancel_listener_timeout_secs: 14400,
+            ios_processing_safety_timeout_secs: 0.0,
+            ..Default::default()
         };
         let json = serde_json::to_string(&config).unwrap();
         let de: PluginConfig = serde_json::from_str(&json).unwrap();
@@ -444,10 +484,41 @@ mod tests {
         let config = PluginConfig {
             ios_safety_timeout_secs: 28.0,
             ios_cancel_listener_timeout_secs: 3600,
+            ios_processing_safety_timeout_secs: 0.0,
+            ..Default::default()
         };
         let json = serde_json::to_string(&config).unwrap();
         let de: PluginConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(de.ios_cancel_listener_timeout_secs, 3600);
+    }
+
+    // --- PluginConfig ios_processing_safety_timeout_secs tests ---
+
+    #[test]
+    fn plugin_config_processing_timeout_default() {
+        let json = "{}";
+        let config: PluginConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.ios_processing_safety_timeout_secs, 0.0);
+    }
+
+    #[test]
+    fn plugin_config_processing_timeout_custom() {
+        let json = r#"{"iosProcessingSafetyTimeoutSecs":60.0}"#;
+        let config: PluginConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.ios_processing_safety_timeout_secs, 60.0);
+    }
+
+    #[test]
+    fn plugin_config_processing_timeout_serde_roundtrip() {
+        let config = PluginConfig {
+            ios_safety_timeout_secs: 28.0,
+            ios_cancel_listener_timeout_secs: 14400,
+            ios_processing_safety_timeout_secs: 120.0,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let de: PluginConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(de.ios_processing_safety_timeout_secs, 120.0);
     }
 
     // --- StartKeepaliveArgs tests ---
@@ -458,6 +529,7 @@ mod tests {
             label: "Test",
             foreground_service_type: "dataSync",
             ios_safety_timeout_secs: Some(15.0),
+            ios_processing_safety_timeout_secs: None,
         };
         let json = serde_json::to_string(&args).unwrap();
         assert!(
@@ -472,6 +544,7 @@ mod tests {
             label: "Test",
             foreground_service_type: "dataSync",
             ios_safety_timeout_secs: None,
+            ios_processing_safety_timeout_secs: None,
         };
         let json = serde_json::to_string(&args).unwrap();
         assert!(
@@ -481,11 +554,42 @@ mod tests {
     }
 
     #[test]
+    fn start_keepalive_args_processing_timeout() {
+        let args = StartKeepaliveArgs {
+            label: "Test",
+            foreground_service_type: "dataSync",
+            ios_safety_timeout_secs: None,
+            ios_processing_safety_timeout_secs: Some(60.0),
+        };
+        let json = serde_json::to_string(&args).unwrap();
+        assert!(
+            json.contains("\"iosProcessingSafetyTimeoutSecs\":60.0"),
+            "JSON should contain iosProcessingSafetyTimeoutSecs: {json}"
+        );
+    }
+
+    #[test]
+    fn start_keepalive_args_no_processing_timeout() {
+        let args = StartKeepaliveArgs {
+            label: "Test",
+            foreground_service_type: "dataSync",
+            ios_safety_timeout_secs: None,
+            ios_processing_safety_timeout_secs: None,
+        };
+        let json = serde_json::to_string(&args).unwrap();
+        assert!(
+            !json.contains("iosProcessingSafetyTimeoutSecs"),
+            "JSON should NOT contain iosProcessingSafetyTimeoutSecs when None: {json}"
+        );
+    }
+
+    #[test]
     fn start_keepalive_args_camel_case_keys() {
         let args = StartKeepaliveArgs {
             label: "Test",
             foreground_service_type: "specialUse",
             ios_safety_timeout_secs: None,
+            ios_processing_safety_timeout_secs: None,
         };
         let json = serde_json::to_string(&args).unwrap();
         assert!(json.contains("\"label\""), "label: {json}");
@@ -493,6 +597,52 @@ mod tests {
             json.contains("\"foregroundServiceType\""),
             "foregroundServiceType: {json}"
         );
+    }
+
+    // --- PluginConfig desktop fields tests (feature-gated) ---
+
+    #[cfg(feature = "desktop-service")]
+    #[test]
+    fn plugin_config_desktop_mode_default() {
+        let json = "{}";
+        let config: PluginConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.desktop_service_mode, "inProcess");
+    }
+
+    #[cfg(feature = "desktop-service")]
+    #[test]
+    fn plugin_config_desktop_mode_custom() {
+        let json = r#"{"desktopServiceMode":"osService"}"#;
+        let config: PluginConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.desktop_service_mode, "osService");
+    }
+
+    #[cfg(feature = "desktop-service")]
+    #[test]
+    fn plugin_config_desktop_mode_serde_roundtrip() {
+        let config = PluginConfig {
+            desktop_service_mode: "osService".into(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let de: PluginConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(de.desktop_service_mode, "osService");
+    }
+
+    #[cfg(feature = "desktop-service")]
+    #[test]
+    fn plugin_config_desktop_label_default() {
+        let json = "{}";
+        let config: PluginConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.desktop_service_label, None);
+    }
+
+    #[cfg(feature = "desktop-service")]
+    #[test]
+    fn plugin_config_desktop_label_custom() {
+        let json = r#"{"desktopServiceLabel":"my.svc"}"#;
+        let config: PluginConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.desktop_service_label, Some("my.svc".to_string()));
     }
 
     use tauri::AppHandle;

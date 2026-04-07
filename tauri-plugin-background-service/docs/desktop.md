@@ -2,9 +2,9 @@
 
 This guide covers desktop-specific behavior for the background service plugin (Linux, macOS, Windows).
 
-## How It Works
+## In-Process Mode (Default)
 
-On desktop platforms, the background service runs as a **standard Tokio async task**. There is no OS-level keepalive mechanism — the service lives as long as the application process.
+On desktop platforms, the background service runs as a **standard Tokio async task** by default. There is no OS-level keepalive mechanism — the service lives as long as the application process.
 
 ### Architecture
 
@@ -121,3 +121,122 @@ app.on_window_event(|window, event| {
 
 **Service doesn't respond to stopService():**
 Verify your `run()` implementation uses `tokio::select!` with `ctx.shutdown.cancelled()`. Without it, the cancellation token is cancelled but `run()` never checks it.
+
+## OS Service Mode
+
+The `desktop-service` Cargo feature enables running the background service as an OS-level daemon (systemd on Linux, launchd on macOS). In this mode, the service survives app restarts and runs independently of the GUI process.
+
+### Feature Flag
+
+Enable the `desktop-service` feature in your app's `Cargo.toml`:
+
+```toml
+[dependencies]
+tauri-plugin-background-service = { version = "0.2", features = ["desktop-service"] }
+```
+
+This pulls in the `service-manager` crate and adds three additional Tauri commands: `install_service`, `uninstall_service`, and `service_status`.
+
+### Configuration
+
+Configure the desktop service mode in your Tauri plugin configuration:
+
+```json
+{
+    "plugins": {
+        "background-service": {
+            "desktopServiceMode": "osService",
+            "desktopServiceLabel": "com.example.myapp.background"
+        }
+    }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `desktopServiceMode` | `"inProcess"` | `"inProcess"` runs in the app process; `"osService"` runs as an OS daemon |
+| `desktopServiceLabel` | Auto-derived from app identifier | Service label for the OS service manager |
+
+### Architecture
+
+In `osService` mode, the plugin uses a **sidecar + IPC** architecture:
+
+```
+GUI process (Tauri app):
+  → IpcClient connects to Unix socket / Windows named pipe
+  → Sends IpcRequest (Start/Stop/IsRunning)
+  → Receives IpcResponse + IpcEvent
+
+Sidecar process (headless binary):
+  → Binds to socket path
+  → IpcServer translates requests to ManagerCommand
+  → Runs BackgroundService in-process
+  → Streams events back to connected clients
+```
+
+### Sidecar Binary
+
+Create a headless binary that runs the background service:
+
+```rust
+// src/bin/background_service.rs
+use tauri_plugin_background_service::desktop::headless_main;
+
+fn main() {
+    headless_main(|| MyService::new());
+}
+```
+
+Add to your app's `Cargo.toml`:
+
+```toml
+[[bin]]
+name = "background-service"
+path = "src/bin/background_service.rs"
+```
+
+Configure Tauri to bundle the sidecar via `externalBin` in `tauri.conf.json`.
+
+### TypeScript API
+
+When the `desktop-service` feature is enabled, three additional functions are available:
+
+```typescript
+import {
+  installService,
+  uninstallService,
+  serviceStatus,
+} from 'tauri-plugin-background-service';
+
+// Install the OS service
+await installService();
+
+// Check service status
+const status = await serviceStatus(); // "running" | "stopped" | "not-installed"
+
+// Uninstall the OS service
+await uninstallService();
+```
+
+### Permissions
+
+Add the desktop service permissions to your capabilities:
+
+```json
+{
+  "permissions": [
+    "background-service:default",
+    "background-service:allow-install-service",
+    "background-service:allow-uninstall-service",
+    "background-service:allow-service-status"
+  ]
+}
+```
+
+### Platform Notes
+
+| Platform | Service Manager | Socket Path |
+|----------|----------------|-------------|
+| Linux | systemd (user unit) | `/tmp/{label}.sock` |
+| macOS | launchd (user agent) | `/tmp/{label}.sock` |
+| Windows | Windows Service | `\\.\pipe\{label}` |

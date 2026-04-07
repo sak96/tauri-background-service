@@ -2,7 +2,86 @@
 
 This guide covers breaking changes and migration steps between major versions of `tauri-plugin-background-service`.
 
-> **Note:** This guide will be populated when breaking changes are introduced in future versions. The plugin is currently at **0.1.0** and follows [Semantic Versioning](https://semver.org/). Breaking changes will be documented here with before/after code examples.
+## 0.1 → 0.2 Migration
+
+Version 0.2 adds **iOS BGProcessingTask support** and a **desktop OS service mode**. There are **no breaking changes** to the existing API — all 0.1 code continues to work unchanged.
+
+### What's New
+
+| Feature | Platform | Description |
+|---------|----------|-------------|
+| `BGProcessingTask` | iOS | Longer background execution windows (minutes/hours instead of ~30 seconds) |
+| `iosProcessingSafetyTimeoutSecs` config | iOS | Configurable safety timeout for processing tasks (default: 0.0, no cap) |
+| `desktop-service` feature | Desktop | Cargo feature enabling OS-level daemon mode (systemd / launchd) |
+| `desktopServiceMode` config | Desktop | `"inProcess"` (default) or `"osService"` for OS daemon mode |
+| `desktopServiceLabel` config | Desktop | Custom label for the OS service |
+| `installService()` | Desktop | TypeScript API to install OS service |
+| `uninstallService()` | Desktop | TypeScript API to uninstall OS service |
+| `serviceStatus()` | Desktop | TypeScript API to query OS service status |
+
+### Required iOS Changes
+
+Update your `Info.plist` to support `BGProcessingTask`:
+
+**Before (0.1):**
+
+```xml
+<key>BGTaskSchedulerPermittedIdentifiers</key>
+<array>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER).bg-refresh</string>
+</array>
+<key>UIBackgroundModes</key>
+<array>
+    <string>fetch</string>
+</array>
+```
+
+**After (0.2):**
+
+```xml
+<key>BGTaskSchedulerPermittedIdentifiers</key>
+<array>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER).bg-refresh</string>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER).bg-processing</string>
+</array>
+<key>UIBackgroundModes</key>
+<array>
+    <string>fetch</string>
+    <string>processing</string>
+</array>
+```
+
+### Optional: Desktop OS Service Mode
+
+To use the desktop OS service mode:
+
+1. Enable the feature in `Cargo.toml`:
+
+```toml
+[dependencies]
+tauri-plugin-background-service = { version = "0.2", features = ["desktop-service"] }
+```
+
+2. Configure in `tauri.conf.json`:
+
+```json
+{
+    "plugins": {
+        "background-service": {
+            "desktopServiceMode": "osService"
+        }
+    }
+}
+```
+
+3. Add desktop service permissions to your capabilities.
+
+### No Action Required For
+
+- Existing `startService()` / `stopService()` / `isServiceRunning()` calls
+- Existing `BackgroundService<R>` trait implementations
+- Existing `PluginConfig` fields (`iosSafetyTimeoutSecs`, `iosCancelListenerTimeoutSecs`)
+- Android foreground service behavior
 
 ## Change Type Classification
 

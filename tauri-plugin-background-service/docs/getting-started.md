@@ -22,7 +22,7 @@ Add the plugin and its notification dependency to your app's `Cargo.toml`:
 
 ```toml
 [dependencies]
-tauri-plugin-background-service = "0.1"
+tauri-plugin-background-service = "0.2"
 tauri-plugin-notification = "2"
 ```
 

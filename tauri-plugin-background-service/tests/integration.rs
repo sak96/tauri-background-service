@@ -92,7 +92,7 @@ fn setup_manager() -> ServiceManagerHandle<tauri::test::MockRuntime> {
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(16);
     let handle = ServiceManagerHandle::new(cmd_tx);
     let factory: ServiceFactory<tauri::test::MockRuntime> = Box::new(|| Box::new(BlockingService));
-    tokio::spawn(manager_loop(cmd_rx, factory, 28.0));
+    tokio::spawn(manager_loop(cmd_rx, factory, 28.0, 0.0));
     handle
 }
 
@@ -101,7 +101,7 @@ fn setup_manager_with_factory(
 ) -> ServiceManagerHandle<tauri::test::MockRuntime> {
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(16);
     let handle = ServiceManagerHandle::new(cmd_tx);
-    tokio::spawn(manager_loop(cmd_rx, factory, 28.0));
+    tokio::spawn(manager_loop(cmd_rx, factory, 28.0, 0.0));
     handle
 }
 

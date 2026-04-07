@@ -1,6 +1,6 @@
 [package]
 name = "tauri-plugin-background-service"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 links = "tauri-plugin-background-service"
 description = "Background service lifecycle plugin for Tauri v2 — run long-lived tasks on Android, iOS, and desktop"
@@ -19,6 +19,10 @@ targets = ["x86_64-unknown-linux-gnu", "aarch64-linux-android", "aarch64-apple-i
 [lib]
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = []
+desktop-service = ["service-manager", "tokio/net"]
+
 [dependencies]
 tauri = { version = "2" }
 tauri-plugin-notification = "2"
@@ -29,6 +33,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 thiserror = "1"
 log = "0.4"
 async-trait = "0.1"
+service-manager = { version = "0.7", optional = true }
 
 [build-dependencies]
 tauri-plugin = { version = "2", features = ["build"] }

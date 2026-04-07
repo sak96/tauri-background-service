@@ -129,7 +129,7 @@ All fields have defaults — an empty `{}` is valid and uses all defaults.
 
 ### `PluginConfig`
 
-Plugin-level configuration, deserialized from the Tauri plugin config in `tauri.conf.json`. Controls iOS-specific timing parameters.
+Plugin-level configuration, deserialized from the Tauri plugin config in `tauri.conf.json`. Controls iOS-specific timing parameters and desktop service mode.
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +137,10 @@ Plugin-level configuration, deserialized from the Tauri plugin config in `tauri.
 pub struct PluginConfig {
     pub ios_safety_timeout_secs: f64,
     pub ios_cancel_listener_timeout_secs: u64,
+    pub ios_processing_safety_timeout_secs: f64,
+    // Behind #[cfg(feature = "desktop-service")]:
+    // pub desktop_service_mode: String,
+    // pub desktop_service_label: Option<String>,
 }
 ```
 
@@ -144,8 +148,11 @@ pub struct PluginConfig {
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `ios_safety_timeout_secs` | `f64` | Optional | `28.0` | iOS safety timeout for the expiration handler. Apple recommends keeping BG tasks under ~30 seconds. iOS only. |
-| `ios_cancel_listener_timeout_secs` | `u64` | Optional | `14400` | iOS cancel listener timeout in seconds (4 hours). Prevents indefinite thread leaks if iOS never resolves the cancel invoke. iOS only. |
+| `ios_safety_timeout_secs` | `f64` | Optional | `28.0` | iOS safety timeout for the BGAppRefreshTask expiration handler. iOS only. |
+| `ios_cancel_listener_timeout_secs` | `u64` | Optional | `14400` | iOS cancel listener timeout in seconds (4 hours). iOS only. |
+| `ios_processing_safety_timeout_secs` | `f64` | Optional | `0.0` | iOS safety timeout for BGProcessingTask. `0.0` means no cap (iOS manages lifetime). iOS only. |
+| `desktop_service_mode` | `String` | Optional | `"inProcess"` | Desktop service mode: `"inProcess"` (default) or `"osService"`. Desktop only, requires `desktop-service` feature. |
+| `desktop_service_label` | `Option<String>` | Optional | Auto-derived | Custom label for the OS service. Desktop only, requires `desktop-service` feature. |
 
 #### Configuration example
 
@@ -154,7 +161,10 @@ pub struct PluginConfig {
   "plugins": {
     "background-service": {
       "iosSafetyTimeoutSecs": 25.0,
-      "iosCancelListenerTimeoutSecs": 7200
+      "iosCancelListenerTimeoutSecs": 7200,
+      "iosProcessingSafetyTimeoutSecs": 600,
+      "desktopServiceMode": "osService",
+      "desktopServiceLabel": "com.example.myapp.background"
     }
   }
 }
@@ -192,6 +202,9 @@ pub enum ServiceError {
 | `Init(String)` | Error message | `init()` returned an error. |
 | `Runtime(String)` | Error message | `run()` returned an error, or the actor channel closed. |
 | `Platform(String)` | Error message | OS-specific failure (e.g. Android foreground service denied, iOS BGTask rejected, mobile keepalive failure). |
+| `ServiceInstall(String)` | Error message | Desktop service installation failed. Requires `desktop-service` feature. |
+| `ServiceUninstall(String)` | Error message | Desktop service uninstallation failed. Requires `desktop-service` feature. |
+| `Ipc(String)` | Error message | Desktop IPC communication error (socket connection, framing). Requires `desktop-service` feature. |
 
 > **Non-exhaustive:** Match with a wildcard `_` arm to handle future variants gracefully.
 
@@ -333,6 +346,9 @@ import {
   stopService,
   isServiceRunning,
   onPluginEvent,
+  installService,
+  uninstallService,
+  serviceStatus,
   type StartConfig,
   type PluginEvent,
 } from 'tauri-plugin-background-service';
@@ -428,6 +444,87 @@ console.log(running); // true or false
 
 ---
 
+### `installService()` (Desktop only)
+
+Install the background service as an OS-level daemon. Requires the `desktop-service` Cargo feature.
+
+```typescript
+async function installService(): Promise<void>
+```
+
+#### Parameters
+
+None.
+
+#### Returns
+
+`Promise<void>` — resolves on success, rejects with a string error message on failure.
+
+#### Errors
+
+| Error | When |
+|-------|------|
+| `"Platform error: ..."` | OS-specific installation failure (permissions, service manager unavailable). |
+
+#### Example
+
+```typescript
+await installService();
+```
+
+> **Note:** This function is only available when the `desktop-service` feature is enabled. On mobile platforms, calling it will fail with "command not found".
+
+---
+
+### `uninstallService()` (Desktop only)
+
+Uninstall the OS-level daemon service. Requires the `desktop-service` Cargo feature.
+
+```typescript
+async function uninstallService(): Promise<void>
+```
+
+#### Parameters
+
+None.
+
+#### Returns
+
+`Promise<void>` — resolves on success, rejects with a string error message on failure.
+
+#### Example
+
+```typescript
+await uninstallService();
+```
+
+---
+
+### `serviceStatus()` (Desktop only)
+
+Query the current status of the OS-level daemon service. Requires the `desktop-service` Cargo feature.
+
+```typescript
+async function serviceStatus(): Promise<string>
+```
+
+#### Parameters
+
+None.
+
+#### Returns
+
+`Promise<string>` — one of `"running"`, `"stopped"`, or `"not-installed"`.
+
+#### Example
+
+```typescript
+const status = await serviceStatus();
+console.log(status); // "running" | "stopped" | "not-installed"
+```
+
+---
+
 ### `onPluginEvent(handler)`
 
 Listen to built-in plugin lifecycle events. Your service can emit custom events via `ctx.app.emit()` — subscribe to those separately with Tauri's `listen()`.
@@ -484,6 +581,12 @@ interface StartConfig {
    * Ignored on non-Android platforms.
    */
   foregroundServiceType?: string;
+  /**
+   * Desktop service mode. "in-process" (default) runs in the app process,
+   * "os-service" routes through IPC to the OS daemon.
+   * Desktop only, requires desktop-service feature.
+   */
+  mode?: "in-process" | "os-service";
 }
 ```
 
@@ -493,6 +596,7 @@ interface StartConfig {
 |-------|------|----------|---------|-------------|
 | `serviceLabel` | `string` | Optional | `"Service running"` | Text shown in the Android persistent notification. |
 | `foregroundServiceType` | `string` | Optional | `"dataSync"` | Android foreground service type. `"dataSync"` for data sync, `"specialUse"` for custom use cases. Ignored on non-Android platforms. |
+| `mode` | `"in-process" \| "os-service"` | Optional | `"in-process"` | Desktop service mode. `"in-process"` runs as a standard Tokio task; `"os-service"` routes through IPC to the OS-level daemon sidecar. |
 
 ---
 

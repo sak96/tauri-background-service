@@ -1,10 +1,15 @@
 # iOS Platform Guide
 
-This guide covers iOS-specific behavior for the background service plugin, including the BGTaskScheduler architecture, timeout configuration, limitations, and debugging.
+This guide covers iOS-specific behavior for the background service plugin, including the BGTaskScheduler architecture, dual task support (BGAppRefreshTask + BGProcessingTask), timeout configuration, limitations, and debugging.
 
 ## How It Works
 
-On iOS, the plugin uses Apple's `BGTaskScheduler` API with `BGAppRefreshTask` to execute background work. iOS background execution is fundamentally different from Android: the OS controls when and for how long your code runs.
+On iOS, the plugin uses Apple's `BGTaskScheduler` API with **two task types** for background execution:
+
+1. **`BGAppRefreshTask`** — Short periodic work (~30 seconds). Registered as `{bundleIdentifier}.bg-refresh`.
+2. **`BGProcessingTask`** — Longer maintenance tasks (minutes to hours). Registered as `{bundleIdentifier}.bg-processing`.
+
+iOS background execution is fundamentally different from Android: the OS controls when and for how long your code runs. The plugin registers handlers for both task types and automatically schedules the next task after each completion.
 
 ### Architecture
 
@@ -14,11 +19,12 @@ JS: startService()
     → Actor: handle_start()
       → MobileLifecycle.start_keepalive()
         → BackgroundServicePlugin.startKeepalive()
-          → BGTaskScheduler.shared.register() + scheduleNext()
+          → BGTaskScheduler.shared.register() for both identifiers
+          → scheduleNext() submits both BGAppRefreshTaskRequest + BGProcessingTaskRequest
 
-iOS calls handleBackgroundTask():
+iOS calls handleBackgroundTask() or handleProcessingTask():
   → Sets expiration handler
-  → Starts safety timer (default: 28.0s)
+  → Starts safety timer (BGAppRefresh: 28.0s default, BGProcessing: configurable)
   → Stores BGTask reference
   → Rust runs service.run() in background
 
@@ -56,21 +62,57 @@ Add the following entries to your app's `Info.plist`:
 <key>UIBackgroundModes</key>
 <array>
     <string>fetch</string>
+    <string>processing</string>
 </array>
 ```
 
 ### 2. Permitted Task Identifiers
 
-The plugin uses a task identifier based on your bundle identifier: `{bundleIdentifier}.bg-refresh`. You must declare it:
+The plugin uses two task identifiers based on your bundle identifier. You must declare both:
 
 ```xml
 <key>BGTaskSchedulerPermittedIdentifiers</key>
 <array>
     <string>$(PRODUCT_BUNDLE_IDENTIFIER).bg-refresh</string>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER).bg-processing</string>
 </array>
 ```
 
 For example, if your bundle identifier is `com.example.myapp`, the task identifier will be `com.example.myapp.bg-refresh`.
+
+## BGProcessingTask Support
+
+Starting from version 0.2, the plugin registers a `BGProcessingTask` handler alongside the existing `BGAppRefreshTask`. This provides access to longer execution windows under specific system conditions.
+
+### How BGProcessingTask differs from BGAppRefreshTask
+
+| Aspect | BGAppRefreshTask | BGProcessingTask |
+|--------|-----------------|-----------------|
+| Duration | ~30 seconds | Minutes to hours |
+| Requires charging | No | Recommended |
+| Requires network | No | Optional |
+| System conditions | Any | Preferably idle, charging |
+| Use case | Quick sync, data refresh | ML training, database maintenance, large downloads |
+
+### Automatic orchestration
+
+The plugin registers both task handlers and submits scheduling requests for both types after each task completion. iOS guarantees at most one BGTask is active at a time — the plugin uses a single `pendingCancelInvoke` and single safety timer for whichever task type is currently running.
+
+### Processing safety timeout
+
+By default, `BGProcessingTask` has **no safety timeout** (the plugin does not impose a cap). You can configure one via `iosProcessingSafetyTimeoutSecs`:
+
+```json
+{
+    "plugins": {
+        "background-service": {
+            "iosProcessingSafetyTimeoutSecs": 600
+        }
+    }
+}
+```
+
+Set to `0` (default) for no timeout, or a positive value in seconds to cap processing task execution time.
 
 ## Timeout Configuration
 
@@ -90,6 +132,12 @@ The plugin has two configurable timeout values set via `PluginConfig` in your Ta
 - **When it fires**: The `waitForCancel` pending invoke is rejected and the cancel listener exits.
 - **Recommendation**: Leave at the default unless you have specific requirements.
 
+### `iosProcessingSafetyTimeoutSecs`
+
+- **Default**: `0.0` (no cap)
+- **Purpose**: Safety timeout for `BGProcessingTask` execution. When set to a positive value, the plugin caps processing task runtime. When `0.0`, the processing task has no plugin-imposed timeout (iOS manages the lifetime).
+- **Recommendation**: Leave at `0.0` for processing tasks that benefit from long runtimes. Set a positive value if you need bounded execution.
+
 ### Setting Custom Values
 
 In your Tauri plugin configuration (`tauri.conf.json` or equivalent):
@@ -99,7 +147,8 @@ In your Tauri plugin configuration (`tauri.conf.json` or equivalent):
     "plugins": {
         "background-service": {
             "iosSafetyTimeoutSecs": 20.0,
-            "iosCancelListenerTimeoutSecs": 7200
+            "iosCancelListenerTimeoutSecs": 7200,
+            "iosProcessingSafetyTimeoutSecs": 600
         }
     }
 }
@@ -176,7 +225,11 @@ po BGTaskScheduler.shared.registeredTaskIdentifiers
 ### Force a Background Task (Simulator)
 
 ```bash
+# Simulate BGAppRefreshTask
 e -l objc -- (void)[[BGTaskScheduler sharedScheduler] _simulateLaunchForTaskWithIdentifier:@"com.example.myapp.bg-refresh"]
+
+# Simulate BGProcessingTask
+e -l objc -- (void)[[BGTaskScheduler sharedScheduler] _simulateLaunchForTaskWithIdentifier:@"com.example.myapp.bg-processing"]
 ```
 
 ### Force a Background Task (Xcode Scheme)
@@ -194,8 +247,8 @@ po BGTaskScheduler.shared.pendingTaskRequests()
 ### Common Issues
 
 **Background task never executes on device:**
-- Verify `BGTaskSchedulerPermittedIdentifiers` in Info.plist matches `{bundleIdentifier}.bg-refresh`
-- Ensure `UIBackgroundModes` includes `fetch`
+- Verify `BGTaskSchedulerPermittedIdentifiers` in Info.plist includes **both** `{bundleIdentifier}.bg-refresh` and `{bundleIdentifier}.bg-processing`
+- Ensure `UIBackgroundModes` includes both `fetch` and `processing`
 - Background tasks are rate-limited by iOS — they may not run for hours
 - Test using the Xcode simulate-launch command above
 

@@ -26,6 +26,21 @@ pub enum ServiceError {
     /// A platform-specific error (e.g. Android foreground service denied).
     #[error("Platform error: {0}")]
     Platform(String),
+
+    /// Failed to install the OS service (desktop only).
+    #[cfg(feature = "desktop-service")]
+    #[error("Service installation failed: {0}")]
+    ServiceInstall(String),
+
+    /// Failed to uninstall the OS service (desktop only).
+    #[cfg(feature = "desktop-service")]
+    #[error("Service uninstallation failed: {0}")]
+    ServiceUninstall(String),
+
+    /// An IPC communication error (desktop only).
+    #[cfg(feature = "desktop-service")]
+    #[error("IPC error: {0}")]
+    Ipc(String),
 }
 
 #[cfg(test)]
@@ -101,5 +116,82 @@ mod tests {
         let json = serde_json::to_string(&err).unwrap();
         let de: ServiceError = serde_json::from_str(&json).unwrap();
         assert!(matches!(de, ServiceError::Init(ref s) if s == "boom"));
+    }
+
+    #[cfg(feature = "desktop-service")]
+    mod desktop_service {
+        use super::*;
+
+        #[test]
+        fn display_service_install() {
+            let msg = "permission denied".to_string();
+            assert_eq!(
+                ServiceError::ServiceInstall(msg.clone()).to_string(),
+                format!("Service installation failed: {msg}")
+            );
+        }
+
+        #[test]
+        fn display_service_uninstall() {
+            let msg = "not found".to_string();
+            assert_eq!(
+                ServiceError::ServiceUninstall(msg.clone()).to_string(),
+                format!("Service uninstallation failed: {msg}")
+            );
+        }
+
+        #[test]
+        fn display_ipc_error() {
+            let msg = "connection lost".to_string();
+            assert_eq!(
+                ServiceError::Ipc(msg.clone()).to_string(),
+                format!("IPC error: {msg}")
+            );
+        }
+
+        #[test]
+        fn serde_roundtrip_service_install() {
+            let err = ServiceError::ServiceInstall("fail".into());
+            let json = serde_json::to_string(&err).unwrap();
+            let de: ServiceError = serde_json::from_str(&json).unwrap();
+            assert!(matches!(de, ServiceError::ServiceInstall(ref s) if s == "fail"));
+        }
+
+        #[test]
+        fn serde_roundtrip_service_uninstall() {
+            let err = ServiceError::ServiceUninstall("fail".into());
+            let json = serde_json::to_string(&err).unwrap();
+            let de: ServiceError = serde_json::from_str(&json).unwrap();
+            assert!(matches!(de, ServiceError::ServiceUninstall(ref s) if s == "fail"));
+        }
+
+        #[test]
+        fn serde_roundtrip_ipc() {
+            let err = ServiceError::Ipc("socket closed".into());
+            let json = serde_json::to_string(&err).unwrap();
+            let de: ServiceError = serde_json::from_str(&json).unwrap();
+            assert!(matches!(de, ServiceError::Ipc(ref s) if s == "socket closed"));
+        }
+
+        #[test]
+        fn clone_roundtrip_service_install() {
+            let err = ServiceError::ServiceInstall("fail".into());
+            let cloned = err.clone();
+            assert_eq!(err.to_string(), cloned.to_string());
+        }
+
+        #[test]
+        fn clone_roundtrip_service_uninstall() {
+            let err = ServiceError::ServiceUninstall("fail".into());
+            let cloned = err.clone();
+            assert_eq!(err.to_string(), cloned.to_string());
+        }
+
+        #[test]
+        fn clone_roundtrip_ipc() {
+            let err = ServiceError::Ipc("timeout".into());
+            let cloned = err.clone();
+            assert_eq!(err.to_string(), cloned.to_string());
+        }
     }
 }

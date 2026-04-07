@@ -5,17 +5,42 @@ import WebKit
 
 @objc public class BackgroundServicePlugin: Plugin {
 
-    private var taskId: String {
+    // MARK: - Task Identifiers
+
+    private var refreshTaskId: String {
         "\(Bundle.main.bundleIdentifier ?? "app").bg-refresh"
     }
 
-    // MARK: - State for C1: BGTask lifecycle management
-    private var currentTask: BGAppRefreshTask?
+    private var processingTaskId: String {
+        "\(Bundle.main.bundleIdentifier ?? "app").bg-processing"
+    }
+
+    // MARK: - State for BGTask lifecycle management
+
+    /// Currently active BGAppRefreshTask, if any.
+    private var currentRefreshTask: BGAppRefreshTask?
+
+    /// Currently active BGProcessingTask, if any.
+    /// iOS guarantees at most one BGTask is active at a time, so only one of
+    /// `currentRefreshTask` or `currentProcessingTask` will be non-nil.
+    private var currentProcessingTask: BGProcessingTask?
+
+    /// Pending cancel invoke — shared between both task types since iOS runs at most one.
     private var pendingCancelInvoke: Invoke?
+
+    /// Safety timer — shared between both task types.
     private var safetyTimer: Timer?
-    /// iOS safety timeout (default: 28.0s, Apple recommends keeping BG tasks under ~30s).
+
+    /// iOS safety timeout for BGAppRefreshTask (default: 28.0s).
     /// Set via `startKeepalive` args from Rust (PluginConfig).
     private var safetyTimeout: TimeInterval = 28.0
+
+    /// Optional safety timeout for BGProcessingTask.
+    /// When `nil` or `0`, no safety timer is started for processing tasks — only the
+    /// iOS expiration handler terminates them. Set via `startKeepalive` args from Rust.
+    private var processingSafetyTimeoutSecs: Double?
+
+    // MARK: - Plugin Lifecycle
 
     public override func load(webView: WKWebView) {
         super.load(webView)
@@ -25,8 +50,11 @@ import WebKit
         UNUserNotificationCenter.current()
             .requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
 
-        // Register background task handler before the app finishes launching.
-        BGTaskScheduler.shared.register(forTaskWithIdentifier: taskId, using: .main) {
+        // Register both BGTask handlers before the app finishes launching.
+        let refreshId = refreshTaskId
+        let processingId = processingTaskId
+
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: refreshId, using: .main) {
             [weak self] task in
             if let bgTask = task as? BGAppRefreshTask {
                 self?.handleBackgroundTask(bgTask)
@@ -34,25 +62,47 @@ import WebKit
                 (task as? BGTask)?.setTaskCompleted(success: false)
             }
         }
+
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: processingId, using: .main) {
+            [weak self] task in
+            if let bgTask = task as? BGProcessingTask {
+                self?.handleProcessingTask(bgTask)
+            } else {
+                (task as? BGTask)?.setTaskCompleted(success: false)
+            }
+        }
     }
 
-    // MARK: - BGTask Handler (C1: rewritten to not complete immediately)
-    private func handleBackgroundTask(_ task: BGAppRefreshTask) {
-        // Store task reference for later completion
-        self.currentTask = task
+    // MARK: - BGAppRefreshTask Handler
 
-        // Set expiration handler that signals cancellation to Rust
+    private func handleBackgroundTask(_ task: BGAppRefreshTask) {
+        self.currentRefreshTask = task
+
         task.expirationHandler = { [weak self] in
             self?.handleExpiration()
         }
 
-        // Start 25-second safety timer (fallback if Rust panics)
-        startSafetyTimer()
-
-        // DO NOT call setTaskCompleted here — wait for Rust signal
+        // Always start safety timer for refresh tasks (default: 28s)
+        startSafetyTimer(with: safetyTimeout)
     }
 
-    // MARK: - Expiration Handler (C1: signals Rust to cancel)
+    // MARK: - BGProcessingTask Handler
+
+    private func handleProcessingTask(_ task: BGProcessingTask) {
+        self.currentProcessingTask = task
+
+        task.expirationHandler = { [weak self] in
+            self?.handleExpiration()
+        }
+
+        // Only start safety timer for processing tasks if an explicit timeout was configured
+        if let timeout = processingSafetyTimeoutSecs, timeout > 0 {
+            startSafetyTimer(with: timeout)
+        }
+    }
+
+    // MARK: - Expiration Handler (signals Rust to cancel)
+
     private func handleExpiration() {
         // Resolve pending cancel invoke (unblocks Rust thread)
         if let invoke = pendingCancelInvoke {
@@ -60,37 +110,40 @@ import WebKit
             pendingCancelInvoke = nil
         }
 
-        // Complete task with failure
-        currentTask?.setTaskCompleted(success: false)
+        // Complete whichever task is active with failure
+        currentRefreshTask?.setTaskCompleted(success: false)
+        currentProcessingTask?.setTaskCompleted(success: false)
 
-        // Schedule next task
+        // Schedule next tasks
         scheduleNext()
 
         // Clear all state
         cleanup()
     }
 
-    // MARK: - Safety Timer (C1: 25-second fallback)
-    private func startSafetyTimer() {
+    // MARK: - Safety Timer
+
+    private func startSafetyTimer(with interval: TimeInterval) {
         safetyTimer?.invalidate()
-        safetyTimer = Timer.scheduledTimer(withTimeInterval: self.safetyTimeout, repeats: false) { [weak self] _ in
+        safetyTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
             self?.handleSafetyTimerExpiration()
         }
     }
 
     private func handleSafetyTimerExpiration() {
         // Force-complete task if Rust never called completeBgTask
-        if currentTask != nil {
+        if currentRefreshTask != nil || currentProcessingTask != nil {
             // Reject pending cancel invoke (unblocks Rust thread)
             if let invoke = pendingCancelInvoke {
                 invoke.reject(error: nil)
                 pendingCancelInvoke = nil
             }
 
-            // Complete task with failure
-            currentTask?.setTaskCompleted(success: false)
+            // Complete whichever task is active with failure
+            currentRefreshTask?.setTaskCompleted(success: false)
+            currentProcessingTask?.setTaskCompleted(success: false)
 
-            // Schedule next task
+            // Schedule next tasks
             scheduleNext()
 
             // Clear all state
@@ -98,28 +151,35 @@ import WebKit
         }
     }
 
-    // MARK: - Cleanup (C1: clear all state)
+    // MARK: - Cleanup
+
     private func cleanup() {
-        currentTask = nil
+        currentRefreshTask = nil
+        currentProcessingTask = nil
         pendingCancelInvoke = nil
         safetyTimer?.invalidate()
         safetyTimer = nil
     }
 
-    // MARK: - waitForCancel (C1: Pending Invoke pattern)
+    // MARK: - waitForCancel (Pending Invoke pattern)
+
     @objc public func waitForCancel(_ invoke: Invoke) {
         // Always store invoke — it will be resolved by expiration/completion
         // or rejected by stopKeepalive, regardless of BGTask state.
         pendingCancelInvoke = invoke
     }
 
-    // MARK: - completeBgTask (C1: Rust→Swift completion signal)
+    // MARK: - completeBgTask (Rust→Swift completion signal)
+
     @objc public func completeBgTask(_ invoke: Invoke) {
         // Extract success value from invoke arguments
         let success = invoke.args(as: [String: Bool].self)?["success"] ?? true
 
-        // Complete the stored BGTask if still active
-        if let task = currentTask {
+        // Complete whichever task is active
+        if let task = currentRefreshTask {
+            task.setTaskCompleted(success: success)
+        }
+        if let task = currentProcessingTask {
             task.setTaskCompleted(success: success)
         }
 
@@ -129,7 +189,7 @@ import WebKit
             pendingCancelInvoke = nil
         }
 
-        // Schedule next task
+        // Schedule next tasks
         scheduleNext()
 
         // Clear all state
@@ -139,21 +199,29 @@ import WebKit
         invoke.resolve()
     }
 
-    // MARK: - startKeepalive (configurable iOS safety timer)
+    // MARK: - startKeepalive (configurable iOS safety timers)
+
     @objc public func startKeepalive(_ invoke: Invoke) {
-        // Read configurable timeout from Rust (default: 28.0s via PluginConfig)
-        if let args = invoke.args(as: [String: Any].self),
-           let timeout = args["iosSafetyTimeoutSecs"] as? Double {
-            safetyTimeout = timeout
+        if let args = invoke.args(as: [String: Any].self) {
+            // BGAppRefreshTask safety timeout (default: 28.0s via PluginConfig)
+            if let timeout = args["iosSafetyTimeoutSecs"] as? Double {
+                safetyTimeout = timeout
+            }
+            // BGProcessingTask safety timeout (default: nil = no cap)
+            if let processingTimeout = args["iosProcessingSafetyTimeoutSecs"] as? Double {
+                processingSafetyTimeoutSecs = processingTimeout
+            }
         }
         scheduleNext()
         invoke.resolve()
     }
 
-    // MARK: - stopKeepalive (C1: modified to clean up active task)
+    // MARK: - stopKeepalive (clean up active task)
+
     @objc public func stopKeepalive(_ invoke: Invoke) {
-        // Cancel any pending schedule
-        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: taskId)
+        // Cancel any pending schedules for both task types
+        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: refreshTaskId)
+        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: processingTaskId)
 
         // Reject pending cancel invoke unconditionally (unblocks Rust thread)
         // This must happen even when no BGTask is active (foreground stop).
@@ -163,24 +231,32 @@ import WebKit
         }
 
         // If a BGTask is active, complete it and clean up
-        if currentTask != nil {
-            // Complete active task with failure
-            currentTask?.setTaskCompleted(success: false)
-
-            // Clear all state
-            cleanup()
+        if currentRefreshTask != nil {
+            currentRefreshTask?.setTaskCompleted(success: false)
+        }
+        if currentProcessingTask != nil {
+            currentProcessingTask?.setTaskCompleted(success: false)
         }
 
-        // Safety timer cleanup
-        safetyTimer?.invalidate()
-        safetyTimer = nil
+        // Clear all state
+        cleanup()
 
         invoke.resolve()
     }
 
+    // MARK: - Scheduling
+
     private func scheduleNext() {
-        let req = BGAppRefreshTaskRequest(identifier: taskId)
-        req.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
-        try? BGTaskScheduler.shared.submit(req)
+        // BGAppRefreshTask — runs opportunistically, ~30s budget
+        let refreshReq = BGAppRefreshTaskRequest(identifier: refreshTaskId)
+        refreshReq.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+        try? BGTaskScheduler.shared.submit(refreshReq)
+
+        // BGProcessingTask — runs when device idle, minutes budget
+        let processingReq = BGProcessingTaskRequest(identifier: processingTaskId)
+        processingReq.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+        processingReq.requiresExternalPower = false
+        processingReq.requiresNetworkConnectivity = false
+        try? BGTaskScheduler.shared.submit(processingReq)
     }
 }
