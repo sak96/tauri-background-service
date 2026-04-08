@@ -1,4 +1,4 @@
-#![doc(html_root_url = "https://docs.rs/tauri-plugin-background-service/0.2.0")]
+#![doc(html_root_url = "https://docs.rs/tauri-plugin-background-service/0.2.2")]
 
 //! # tauri-plugin-background-service
 //!
