@@ -19,6 +19,9 @@
       }
     ]
   },
+  "plugins": {
+    "background-service": {}
+  },
   "bundle": {
     "android": {
       "minSdkVersion": 33
