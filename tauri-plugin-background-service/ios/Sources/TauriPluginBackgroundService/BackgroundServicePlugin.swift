@@ -248,8 +248,7 @@ import WebKit
         if let task = currentRefreshTask {
             currentRefreshTask = nil
             task.setTaskCompleted(success: false)
-        }
-        if let task = currentProcessingTask {
+        } else if let task = currentProcessingTask {
             currentProcessingTask = nil
             task.setTaskCompleted(success: false)
         }

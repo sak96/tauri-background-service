@@ -260,6 +260,55 @@ async fn install_service<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     let plugin_config = app.state::<PluginConfig>();
     let label = derive_service_label(&app, plugin_config.desktop_service_label.as_deref());
     let exec_path = std::env::current_exe().map_err(|e| e.to_string())?;
+
+    // Validate that the executable exists and is executable.
+    if !exec_path.exists() {
+        return Err(format!(
+            "Current executable does not exist at {}: cannot install OS service",
+            exec_path.display()
+        ));
+    }
+
+    // Verify the binary supports --service-label by spawning it with the flag
+    // and checking for a specific exit behavior. We use a timeout to avoid
+    // hanging if the binary starts a GUI.
+    let validate_result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::process::Command::new(&exec_path)
+            .arg("--service-label")
+            .arg(&label)
+            .arg("--validate-service-install")
+            .output(),
+    )
+    .await;
+
+    match validate_result {
+        Ok(Ok(output)) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if !stdout.trim().contains("ok") {
+                return Err(
+                    "Binary does not handle --validate-service-install. \
+                     Ensure headless_main() is called from your app's main()."
+                        .into(),
+                );
+            }
+        }
+        Ok(Err(e)) => {
+            return Err(format!(
+                "Failed to validate executable for --service-label: {e}"
+            ));
+        }
+        Err(_) => {
+            // Timed out — the binary probably started the GUI instead of handling
+            // the service flag. Warn but don't block installation.
+            log::warn!(
+                "Timeout validating --service-label support. \
+                 Ensure your app's main() handles the --service-label argument \
+                 and calls headless_main()."
+            );
+        }
+    }
+
     let mgr = DesktopServiceManager::new(&label, exec_path).map_err(|e| e.to_string())?;
     mgr.install().map_err(|e| e.to_string())
 }
@@ -323,7 +372,7 @@ where
                     app,
                     config.desktop_service_label.as_deref(),
                 );
-                let socket_path = desktop::ipc::socket_path(&label);
+                let socket_path = desktop::ipc::socket_path(&label)?;
                 let client = desktop::ipc_client::PersistentIpcClientHandle::spawn(
                     socket_path,
                     app.app_handle().clone(),
@@ -383,6 +432,13 @@ where
                     let manager = app.state::<ServiceManagerHandle<R>>();
                     let cmd_tx = manager.cmd_tx.clone();
                     let app_clone = app.app_handle().clone();
+
+                    // Set a no-op on_complete callback for consistency with iOS path.
+                    if let Err(e) = cmd_tx.try_send(ManagerCommand::SetOnComplete {
+                        callback: Box::new(|_| {}),
+                    }) {
+                        log::error!("Failed to send SetOnComplete command: {e}");
+                    }
 
                     tauri::async_runtime::spawn(async move {
                         let (tx, rx) = tokio::sync::oneshot::channel();

@@ -31,6 +31,14 @@ use crate::desktop::ipc_server::IpcServer;
 use crate::manager::manager_loop;
 use crate::service_trait::BackgroundService;
 
+/// Check if `--validate-service-install` is present in CLI arguments.
+///
+/// Used by `install_service` to verify the binary handles `--service-label`
+/// without actually starting the service.
+fn has_validate_flag(mut args: impl Iterator<Item = String>) -> bool {
+    args.any(|arg| arg == "--validate-service-install")
+}
+
 /// Parse `--service-label <label>` from CLI arguments.
 ///
 /// Returns the label on success, or a descriptive error message on failure.
@@ -80,11 +88,25 @@ where
         std::process::exit(1);
     });
 
+    // Early-exit for install validation: the GUI process spawns us with
+    // --validate-service-install to confirm we handle --service-label.
+    // Exit immediately before binding sockets or spawning tasks.
+    if has_validate_flag(std::env::args()) {
+        println!("ok");
+        std::process::exit(0);
+    }
+
     tauri::async_runtime::block_on(async move {
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
         tauri::async_runtime::spawn(manager_loop(cmd_rx, Box::new(factory), 0.0, 0.0));
 
-        let path = socket_path(&label);
+        let path = match socket_path(&label) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("error: invalid service label: {e}");
+                return;
+            }
+        };
         let server = match IpcServer::bind(path, cmd_tx, app) {
             Ok(s) => s,
             Err(e) => {
@@ -176,5 +198,28 @@ mod tests {
             err.contains("empty"),
             "Error should mention empty value: {err}"
         );
+    }
+
+    // ── AC3: --validate-service-install flag detection ────────────────────
+
+    #[test]
+    fn validate_flag_detected_when_present() {
+        let args = vec![
+            "my-app-headless".to_string(),
+            "--service-label".to_string(),
+            "com.example.svc".to_string(),
+            "--validate-service-install".to_string(),
+        ];
+        assert!(has_validate_flag(args.into_iter()));
+    }
+
+    #[test]
+    fn validate_flag_absent() {
+        let args = vec![
+            "my-app-headless".to_string(),
+            "--service-label".to_string(),
+            "com.example.svc".to_string(),
+        ];
+        assert!(!has_validate_flag(args.into_iter()));
     }
 }

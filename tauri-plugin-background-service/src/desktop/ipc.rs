@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::ServiceError;
+
 /// Maximum allowed frame size (16 MB).
 pub const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 
@@ -112,46 +114,48 @@ pub enum FrameError {
 /// - macOS: `/tmp/{label}.sock`
 /// - Windows: `\\.\pipe\{label}`
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if the label contains path separators (`/`, `\`) or `..` components,
-/// which could be used for path traversal attacks.
-pub fn socket_path(label: &str) -> std::path::PathBuf {
-    sanitize_label(label);
+/// Returns `ServiceError::Init` if the label is empty, contains path
+/// separators, or contains `..` components.
+pub fn socket_path(label: &str) -> Result<std::path::PathBuf, ServiceError> {
+    sanitize_label(label)?;
     #[cfg(target_os = "linux")]
     {
         let dir = std::env::var("XDG_RUNTIME_DIR")
             .unwrap_or_else(|_| format!("/run/user/{}", unsafe { libc::getuid() }));
-        std::path::PathBuf::from(format!("{dir}/{label}.sock"))
+        Ok(std::path::PathBuf::from(format!("{dir}/{label}.sock")))
     }
     #[cfg(target_os = "macos")]
     {
-        std::path::PathBuf::from(format!("/tmp/{label}.sock"))
+        Ok(std::path::PathBuf::from(format!("/tmp/{label}.sock")))
     }
     #[cfg(windows)]
     {
-        std::path::PathBuf::from(format!(r"\\.\pipe\{label}"))
+        Ok(std::path::PathBuf::from(format!(r"\\.\pipe\{label}")))
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
-        std::path::PathBuf::from(format!("/tmp/{label}.sock"))
+        Ok(std::path::PathBuf::from(format!("/tmp/{label}.sock")))
     }
 }
 
 /// Validate that a service label does not contain path traversal characters.
-fn sanitize_label(label: &str) {
-    assert!(
-        !label.is_empty(),
-        "service label must not be empty"
-    );
-    assert!(
-        !label.contains('/') && !label.contains('\\'),
-        "service label must not contain path separators: {label}"
-    );
-    assert!(
-        !label.contains(".."),
-        "service label must not contain '..': {label}"
-    );
+fn sanitize_label(label: &str) -> Result<std::path::PathBuf, ServiceError> {
+    if label.is_empty() {
+        return Err(ServiceError::Init("service label must not be empty".into()));
+    }
+    if label.contains('/') || label.contains('\\') {
+        return Err(ServiceError::Init(format!(
+            "service label must not contain path separators: {label}"
+        )));
+    }
+    if label.contains("..") {
+        return Err(ServiceError::Init(format!(
+            "service label must not contain '..': {label}"
+        )));
+    }
+    Ok(std::path::PathBuf::from(label))
 }
 
 #[cfg(test)]
@@ -459,7 +463,7 @@ mod tests {
 
     #[test]
     fn socket_path_unix_format() {
-        let path = socket_path("com.example.svc");
+        let path = socket_path("com.example.svc").unwrap();
         #[cfg(target_os = "linux")]
         {
             // Should be under XDG_RUNTIME_DIR or /run/user/{uid}
@@ -488,7 +492,7 @@ mod tests {
 
     #[test]
     fn socket_path_nonempty_label() {
-        let path = socket_path("my-app");
+        let path = socket_path("my-app").unwrap();
         #[cfg(unix)]
         {
             assert!(
@@ -500,26 +504,34 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "path separators")]
     fn socket_path_rejects_slash_in_label() {
-        let _ = socket_path("../etc/passwd");
+        let result = socket_path("../etc/passwd");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("path separators"), "Error: {err}");
     }
 
     #[test]
-    #[should_panic(expected = "must not contain '..'")]
     fn socket_path_rejects_dotdot_in_label() {
-        let _ = socket_path("..");
+        let result = socket_path("..");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("'..'"), "Error: {err}");
     }
 
     #[test]
-    #[should_panic(expected = "path separators")]
     fn socket_path_rejects_backslash_in_label() {
-        let _ = socket_path("foo\\bar");
+        let result = socket_path("foo\\bar");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("path separators"), "Error: {err}");
     }
 
     #[test]
-    #[should_panic(expected = "empty")]
     fn socket_path_rejects_empty_label() {
-        let _ = socket_path("");
+        let result = socket_path("");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("empty"), "Error: {err}");
     }
 }

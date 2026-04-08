@@ -9,8 +9,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use service_manager::{
-    ServiceInstallCtx, ServiceLabel, ServiceLevel, ServiceManager, ServiceStartCtx,
-    ServiceStopCtx, ServiceUninstallCtx,
+    ServiceInstallCtx, ServiceLabel, ServiceLevel, ServiceManager,
+    ServiceUninstallCtx,
 };
 use tauri::AppHandle;
 
@@ -84,26 +84,6 @@ impl DesktopServiceManager {
                 label: self.label.clone(),
             })
             .map_err(|e| ServiceError::ServiceUninstall(e.to_string()))
-    }
-
-    /// Start the OS service.
-    #[allow(dead_code)]
-    pub fn start(&self) -> Result<(), ServiceError> {
-        self.manager
-            .start(ServiceStartCtx {
-                label: self.label.clone(),
-            })
-            .map_err(|e| ServiceError::Platform(e.to_string()))
-    }
-
-    /// Stop the OS service.
-    #[allow(dead_code)]
-    pub fn stop(&self) -> Result<(), ServiceError> {
-        self.manager
-            .stop(ServiceStopCtx {
-                label: self.label.clone(),
-            })
-            .map_err(|e| ServiceError::Platform(e.to_string()))
     }
 
 }
